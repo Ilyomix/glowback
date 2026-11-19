@@ -3,156 +3,116 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Glowback: Ambilight for PC monitors with rear RGB LEDs (free, Windows)</title>
-<meta name="description" content="Free, open-source Ambilight for your PC monitor: each RGB LED on the back follows the screen in real time. Works with AOC AGON PRO Light FX and any Windows 11 Dynamic Lighting device. HDR, fullscreen games and movies.">
+<title>Glowback: free ambient light for monitors with rear RGB LEDs (Windows)</title>
+<meta name="description" content="Free, open-source ambient light for your PC monitor: every RGB LED on the back follows the screen in real time. Works with Windows 11 Dynamic Lighting and OpenRGB devices. HDR, fullscreen games and movies.">
 <link rel="canonical" href="https://ilyomix.github.io/glowback/">
 <link rel="alternate" hreflang="en" href="https://ilyomix.github.io/glowback/">
 <link rel="alternate" hreflang="fr" href="https://ilyomix.github.io/glowback/fr/">
 <link rel="alternate" hreflang="x-default" href="https://ilyomix.github.io/glowback/">
 <link rel="icon" href="favicon.ico">
-<meta name="theme-color" content="#07080c">
+<link rel="preload" href="fonts/inter-400.woff" as="font" type="font/woff" crossorigin>
+<meta name="theme-color" content="#07080b">
 <meta property="og:type" content="website">
+<meta property="og:locale" content="en_US">
 <meta property="og:site_name" content="Glowback">
-<meta property="og:title" content="Glowback: Ambilight for PC monitors with rear RGB LEDs">
-<meta property="og:description" content="Each LED on the back of your monitor follows the picture in real time. Free, open source, no LED strip needed.">
+<meta property="og:title" content="Glowback: ambient light for monitors with rear RGB LEDs">
+<meta property="og:description" content="Every LED on the back of your monitor follows the picture in real time. Free, open source, no LED strip needed.">
 <meta property="og:url" content="https://ilyomix.github.io/glowback/">
 <meta property="og:image" content="https://ilyomix.github.io/glowback/social-preview.png">
 <meta property="og:image:width" content="1280">
 <meta property="og:image:height" content="640">
 <meta name="twitter:card" content="summary_large_image">
-<meta name="twitter:title" content="Glowback: Ambilight for PC monitors with rear RGB LEDs">
-<meta name="twitter:description" content="Each LED on the back of your monitor follows the picture in real time. Free and open source.">
+<meta name="twitter:title" content="Glowback: ambient light for monitors with rear RGB LEDs">
+<meta name="twitter:description" content="Every LED on the back of your monitor follows the picture in real time. Free, open source, no LED strip needed.">
 <meta name="twitter:image" content="https://ilyomix.github.io/glowback/social-preview.png">
-<script type="application/ld+json">
-{
-  "@context": "https://schema.org",
-  "@type": "SoftwareApplication",
-  "name": "Glowback",
-  "description": "Ambilight-style screen sync for the RGB LEDs on the back of PC monitors. Each LED follows the part of the image in front of it. Works with Windows Dynamic Lighting (HID LampArray) devices such as AOC AGON PRO Light FX.",
-  "applicationCategory": "UtilitiesApplication",
-  "operatingSystem": "Windows 10, Windows 11",
-  "softwareVersion": "0.2.0",
-  "license": "https://opensource.org/licenses/MIT",
-  "isAccessibleForFree": true,
-  "offers": {"@type": "Offer", "price": "0", "priceCurrency": "USD"},
-  "downloadUrl": "https://github.com/Ilyomix/glowback/releases/latest",
-  "codeRepository": "https://github.com/Ilyomix/glowback",
-  "image": "https://ilyomix.github.io/glowback/social-preview.png",
-  "author": {"@type": "Person", "name": "Ilyomix", "url": "https://github.com/Ilyomix"}
-}
-</script>
-<script type="application/ld+json">
-{
-  "@context": "https://schema.org",
-  "@type": "FAQPage",
-  "mainEntity": [
-    {"@type": "Question", "name": "How do I sync my monitor's RGB lighting with what's on screen?",
-     "acceptedAnswer": {"@type": "Answer", "text": "Install Glowback, turn off Windows Dynamic Lighting for the monitor, and run glowback --install. The rear LEDs then follow the picture automatically."}},
-    {"@type": "Question", "name": "Does AOC AGON Light FX support screen sync or Ambilight?",
-     "acceptedAnswer": {"@type": "Answer", "text": "Not with AOC's own software, which only has preset effects. The Light FX controller of the AG276QZD2 supports the Windows Dynamic Lighting standard, which Glowback uses to sync each LED with the screen."}},
-    {"@type": "Question", "name": "Can I get Ambilight on a PC monitor without an LED strip?",
-     "acceptedAnswer": {"@type": "Answer", "text": "Yes, if the monitor has RGB LEDs on the back that support Windows Dynamic Lighting. Glowback uses those LEDs directly."}},
-    {"@type": "Question", "name": "Does it work with HDR, fullscreen games and movies?",
-     "acceptedAnswer": {"@type": "Answer", "text": "Yes. GPU capture (DXGI) handles fullscreen and borderless games, video players and HDR desktops, and movie black bars are ignored. DRM-protected streams are usually blacked out by Windows for every capture tool."}},
-    {"@type": "Question", "name": "How do I uninstall Glowback?",
-     "acceptedAnswer": {"@type": "Answer", "text": "Run glowback --uninstall, then pip uninstall glowback, or delete the .exe. The LEDs return to the effect set in the monitor's menu."}}
-  ]
-}
-</script>
+<script type="application/ld+json">{"@context": "https://schema.org", "@type": "SoftwareApplication", "name": "Glowback", "inLanguage": "en", "description": "Free, open-source ambient light for your PC monitor: every RGB LED on the back follows the screen in real time. Works with Windows 11 Dynamic Lighting and OpenRGB devices. HDR, fullscreen games and movies.", "applicationCategory": "UtilitiesApplication", "operatingSystem": "Windows 10, Windows 11", "softwareVersion": "0.3.0", "license": "https://opensource.org/licenses/MIT", "isAccessibleForFree": true, "offers": {"@type": "Offer", "price": "0", "priceCurrency": "USD"}, "downloadUrl": "https://github.com/Ilyomix/glowback/releases/latest/download/GlowbackSetup.exe", "codeRepository": "https://github.com/Ilyomix/glowback", "image": "https://ilyomix.github.io/glowback/social-preview.png", "author": {"@type": "Person", "name": "Ilyomix", "url": "https://github.com/Ilyomix"}}</script>
+<script type="application/ld+json">{"@context": "https://schema.org", "@type": "FAQPage", "mainEntity": [{"@type": "Question", "name": "Which monitors are supported?", "acceptedAnswer": {"@type": "Answer", "text": "Any monitor whose rear RGB lighting can be controlled through Windows Dynamic Lighting or OpenRGB. Run glowback --list, or look for your monitor in Settings → Personalization → Dynamic Lighting."}}, {"@type": "Question", "name": "How do I sync my monitor's RGB lighting with what's on screen?", "acceptedAnswer": {"@type": "Answer", "text": "Install Glowback and turn off Windows Dynamic Lighting for the monitor. The LEDs then follow the picture automatically."}}, {"@type": "Question", "name": "Can I get screen-synced ambient light without an LED strip?", "acceptedAnswer": {"@type": "Answer", "text": "Yes, if your monitor already has rear RGB LEDs that Windows Dynamic Lighting or OpenRGB can control. Otherwise, the DIY guide adds a strip for about $10."}}, {"@type": "Question", "name": "Does it work with HDR, fullscreen games and movies?", "acceptedAnswer": {"@type": "Answer", "text": "Yes. GPU capture (DXGI) handles fullscreen games, video players and HDR, and movie black bars are ignored. DRM-protected streams are usually blacked out by Windows for every capture tool."}}, {"@type": "Question", "name": "How do I uninstall Glowback?", "acceptedAnswer": {"@type": "Answer", "text": "Settings → Apps → Installed apps → Glowback → Uninstall. The LEDs go back to the device's own effect."}}]}</script>
 <style>
-  :root { --bg: #07080c; --card: #10121a; --line: #222634; --text: #e6e9f0; --muted: #9aa3b5; --accent: #a56bff; }
+  @font-face { font-family: Inter; font-weight: 400; font-display: swap; src: url(fonts/inter-400.woff) format("woff"); }
+  @font-face { font-family: Inter; font-weight: 600; font-display: swap; src: url(fonts/inter-600.woff) format("woff"); }
+  @font-face { font-family: Inter; font-weight: 700; font-display: swap; src: url(fonts/inter-700.woff) format("woff"); }
+  :root { --bg: #07080b; --card: #101219; --line: #1f2230; --text: #e8eaf0; --muted: #9097a8; --accent: #9b7bff; }
   * { box-sizing: border-box; }
-  body { margin: 0; background: var(--bg); color: var(--text); font: 17px/1.6 "Segoe UI Variable", "Segoe UI", system-ui, -apple-system, "Helvetica Neue", Arial, sans-serif; }
-  a { color: #b9a2ff; }
-  .wrap { max-width: 980px; margin: 0 auto; padding: 0 24px; }
-  header { padding: 28px 0 8px; display: flex; justify-content: space-between; align-items: center; }
-  header nav a { color: var(--muted); text-decoration: none; margin-left: 20px; font-size: 15px; }
-  .hero img { width: 100%; height: auto; border-radius: 20px; display: block; }
-  h1 { font-size: clamp(30px, 5vw, 46px); line-height: 1.15; margin: 36px 0 12px; letter-spacing: -0.02em; }
-  h2 { font-size: 28px; margin: 56px 0 14px; letter-spacing: -0.01em; }
-  h3 { font-size: 19px; margin: 26px 0 6px; }
-  .lead { font-size: 20px; color: #cfd4df; max-width: 760px; }
-  .cta { display: flex; flex-wrap: wrap; gap: 12px; margin: 26px 0 8px; }
-  .btn { display: inline-block; padding: 13px 22px; border-radius: 12px; font-weight: 600; text-decoration: none; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 17px/1.65 Inter, "Segoe UI", system-ui, sans-serif; -webkit-font-smoothing: antialiased; }
+  a { color: #b9a3ff; text-decoration: none; } a:hover { text-decoration: underline; }
+  .wrap { max-width: 1040px; margin: 0 auto; padding: 0 24px; }
+  header { display: flex; justify-content: space-between; align-items: center; padding: 26px 0 18px; }
+  header img { height: 26px; width: auto; display: block; }
+  nav a { color: var(--muted); margin-left: 22px; font-size: 15px; }
+  .hero img { width: 100%; height: auto; border-radius: 22px; display: block; border: 1px solid var(--line); }
+  h1 { font-size: clamp(32px, 5vw, 50px); line-height: 1.12; letter-spacing: -0.025em; margin: 44px 0 14px; font-weight: 700; }
+  h1 span { background: linear-gradient(90deg, #6f9bff, #c77dff 55%, #ffab5c); -webkit-background-clip: text; background-clip: text; color: transparent; }
+  h2 { font-size: 30px; letter-spacing: -0.02em; margin: 72px 0 18px; font-weight: 700; }
+  h3 { font-size: 18px; margin: 10px 0 6px; font-weight: 600; }
+  .lead { font-size: 20px; color: #c9cedb; max-width: 780px; }
+  .cta { display: flex; flex-wrap: wrap; gap: 12px; margin: 30px 0 10px; align-items: center; }
+  .btn { display: inline-block; padding: 14px 24px; border-radius: 12px; font-weight: 600; }
+  .btn:hover { text-decoration: none; }
   .btn.primary { background: linear-gradient(90deg, #4c74ff, #a54bff 55%, #ff7a45); color: #fff; }
   .btn.ghost { border: 1px solid var(--line); color: var(--text); }
-  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(270px, 1fr)); gap: 14px; }
-  .card { background: var(--card); border: 1px solid var(--line); border-radius: 16px; padding: 18px 20px; }
-  .card h3 { margin-top: 0; }
-  .card p { margin: 0; color: var(--muted); font-size: 16px; }
-  pre { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; overflow-x: auto; }
-  code { font-family: "Cascadia Code", Consolas, monospace; font-size: 15px; }
-  table { width: 100%; border-collapse: collapse; font-size: 16px; }
-  th, td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--line); vertical-align: top; }
-  th { color: var(--muted); font-weight: 600; }
-  ol li { margin: 6px 0; }
-  footer { margin: 70px 0 40px; color: var(--muted); font-size: 14px; }
+  .note { color: var(--muted); font-size: 14px; margin-left: 6px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 14px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 18px; padding: 22px; }
+  .card .ic { font-size: 24px; }
+  .card p { margin: 0; color: var(--muted); font-size: 15.5px; }
+  ol, ul { padding-left: 22px; } li { margin: 8px 0; }
+  .muted { color: var(--muted); }
+  details { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 16px 20px; margin: 10px 0; }
+  summary { cursor: pointer; font-weight: 600; }
+  details p { color: #c3c8d4; margin: 10px 0 0; }
+  footer { margin: 80px 0 40px; padding-top: 24px; border-top: 1px solid var(--line); color: var(--muted); font-size: 13.5px; }
 </style>
 </head>
 <body>
 <div class="wrap">
   <header>
-    <strong>Glowback</strong>
-    <nav><a href="#install">Install</a><a href="#faq">FAQ</a><a href="https://github.com/Ilyomix/glowback">GitHub</a><a href="fr/" hreflang="fr" lang="fr">Français</a></nav>
+    <a href="./" aria-label="Glowback"><img src="wordmark.svg" alt="Glowback" width="113" height="26"></a>
+    <nav><a href="#install">Install</a><a href="#compat">Compatibility</a><a href="#faq">FAQ</a><a href="https://github.com/Ilyomix/glowback">GitHub</a><a href="fr/" hreflang="fr" lang="fr">Français</a></nav>
   </header>
 
   <section class="hero">
-    <img src="social-preview.png" width="1280" height="640" alt="A monitor whose rear RGB LEDs glow on the wall with the colors of the picture, like Ambilight">
-    <h1>Ambilight for PC monitors with RGB LEDs on the back</h1>
-    <p class="lead">Glowback makes <strong>each LED on the back of your monitor follow the part of the picture in front of it</strong>, in real time. It's free and open source. No LED strip, camera or vendor app needed, and it works with any <strong>Windows 11 Dynamic Lighting</strong> device, starting with the <strong>AOC AGON PRO Light FX</strong>.</p>
+    <img src="social-preview.png" width="1280" height="640" alt="Glowback: ambient light for monitors with rear RGB LEDs">
+    <h1><span>Ambient light</span> for monitors with RGB LEDs on the back</h1>
+    <p class="lead">Glowback makes <strong>each LED on the back of your monitor follow the part of the picture in front of it</strong>, in real time. It works with any <strong>Windows 11 Dynamic Lighting</strong> or <strong>OpenRGB</strong> device. It's free and open source, with no LED strip, camera or vendor app needed.</p>
     <div class="cta">
-      <a class="btn primary" href="https://github.com/Ilyomix/glowback/releases/latest/download/GlowbackTray.exe">Download for Windows</a>
+      <a class="btn primary" href="https://github.com/Ilyomix/glowback/releases/latest/download/GlowbackSetup.exe">Download for Windows</a>
       <a class="btn ghost" href="https://github.com/Ilyomix/glowback">View on GitHub</a>
+      <span class="note">Windows 10 / 11 · Free · 6 languages</span>
     </div>
   </section>
 
   <h2>Why Glowback</h2>
   <div class="grid">
-    <div class="card"><h3>🎯 One zone per LED</h3><p>Each LED is mapped to the nearest screen edge, like an Ambilight TV, using the LED positions the device reports.</p></div>
-    <div class="card"><h3>🎬 Movies, games, HDR</h3><p>GPU capture sees fullscreen video and games, handles HDR, and ignores movie black bars.</p></div>
-    <div class="card"><h3>🪟 Native on Windows</h3><p>A tray icon to pause it or change mode and brightness, optional start with Windows, a Start menu entry and a one-command uninstall.</p></div>
-    <div class="card"><h3>🪶 Featherweight</h3><p>About 0.5 ms of CPU per frame. One Python file, zero dependencies, MIT license.</p></div>
+      <div class="card"><div class="ic">🎯</div><h3>One zone per LED</h3><p>Each LED follows the edge of the picture right in front of it, using the LED positions the device reports.</p></div>
+      <div class="card"><div class="ic">🎬</div><h3>Movies, games, HDR</h3><p>GPU capture sees fullscreen video and games, handles HDR and ignores movie black bars.</p></div>
+      <div class="card"><div class="ic">🪟</div><h3>A real Windows app</h3><p>Installer, Start menu, start with Windows, a dark tray menu with live status, clean uninstall.</p></div>
+      <div class="card"><div class="ic">🔄</div><h3>Always up to date</h3><p>Update notifications (one switch to turn them off), 6 languages, about 0.5 ms of CPU per frame.</p></div>
   </div>
 
   <h2 id="install">Install in one minute</h2>
   <ol>
-    <li>Connect the monitor's <strong>USB upstream cable</strong> to your PC. The LED controller is a USB device.</li>
-    <li>In <em>Settings → Personalization → Dynamic Lighting</em>, turn <strong>off</strong> "Use Dynamic Lighting on my devices" for the monitor.</li>
-    <li>Run <a href="https://github.com/Ilyomix/glowback/releases/latest/download/GlowbackTray.exe">GlowbackTray.exe</a>, or install with Python:</li>
+      <li>Connect the monitor's <strong>USB upstream cable</strong> to your PC.</li>
+      <li>In <em>Settings → Personalization → Dynamic Lighting</em>, turn <strong>off</strong> "Use Dynamic Lighting on my devices" for your monitor.</li>
+      <li>Download <a href="https://github.com/Ilyomix/glowback/releases/latest/download/GlowbackSetup.exe">GlowbackSetup.exe</a> and follow the wizard. Glowback appears next to the clock.</li>
   </ol>
-<pre><code>pip install git+https://github.com/Ilyomix/glowback
-glowback --install</code></pre>
-  <p>To uninstall: <code>glowback --uninstall</code>, then <code>pip uninstall glowback</code> (or delete the .exe). <a href="https://github.com/Ilyomix/glowback#-uninstall">Full guide</a>.</p>
+  <p class="muted">To uninstall: <em>Settings → Apps → Installed apps → Glowback → Uninstall</em>.</p>
 
-  <h2>Compatible monitors and devices</h2>
-  <table>
-    <tr><th>Device</th><th>Status</th></tr>
-    <tr><td>AOC AGON PRO AG276QZD2 (Light FX, 47 LEDs)</td><td>✅ Tested</td></tr>
-    <tr><td>Other monitors, LED strips, cases and lamps listed in Windows Dynamic Lighting</td><td>🟡 Should work. <a href="https://github.com/Ilyomix/glowback/issues/new?template=device-report.yml">Report yours</a></td></tr>
-  </table>
-
-  <h2>Not just monitors</h2>
-  <div class="grid">
-    <div class="card"><h3>🌈 OpenRGB devices</h3><p>Run <code>glowback --openrgb</code> to sync ARGB strips, cases and anything else <a href="https://openrgb.org">OpenRGB</a> supports with your screen.</p></div>
-    <div class="card"><h3>🛠️ DIY for any monitor</h3><p>No RGB on your monitor? Add an LED strip and a $5 RP2040 board: <a href="DIY-LED-strip.html">step-by-step guide</a>.</p></div>
-    <div class="card"><h3>🎨 White balance</h3><p><code>glowback --calibrate</code> tunes each device so the light on your wall looks neutral white.</p></div>
-  </div>
+  <h2 id="compat">Does my monitor work?</h2>
+  <ul>
+      <li>It appears in <em>Settings → Personalization → Dynamic Lighting</em>: ✅ Glowback drives it.</li>
+      <li>It is supported by <a href="https://openrgb.org">OpenRGB</a>: ✅ start OpenRGB's SDK server, Glowback finds it automatically.</li>
+      <li>Neither: 🛠️ add an LED strip with a $5 RP2040 board (<a href="DIY-LED-strip.html">DIY guide</a>).</li>
+  </ul>
+  <p class="muted">Tested so far: AOC AGON PRO AG276QZD2 (47 LEDs). <a href="https://github.com/Ilyomix/glowback/issues/new?template=device-report.yml">Report your monitor</a> to add it.</p>
 
   <h2 id="faq">FAQ</h2>
-  <h3>How do I sync my monitor's RGB lighting with what's on screen?</h3>
-  <p>Install Glowback, turn off Windows Dynamic Lighting for the monitor, and run <code>glowback --install</code>. The rear LEDs then follow the picture automatically.</p>
-  <h3>Does AOC AGON Light FX support screen sync or Ambilight?</h3>
-  <p>Not with AOC's own software, which only has preset effects. The Light FX controller of the AG276QZD2 supports the Windows Dynamic Lighting standard, which Glowback uses to sync each LED with the screen.</p>
-  <h3>Can I get Ambilight on a PC monitor without an LED strip?</h3>
-  <p>Yes, if the monitor has RGB LEDs on the back that support Windows Dynamic Lighting. Glowback uses those LEDs directly.</p>
-  <h3>Does it work with HDR, fullscreen games and movies?</h3>
-  <p>Yes. GPU capture (DXGI) handles fullscreen and borderless games, video players and HDR desktops, and movie black bars are ignored. DRM-protected streams are usually blacked out by Windows for every capture tool.</p>
-  <h3>How do I uninstall Glowback?</h3>
-  <p>Run <code>glowback --uninstall</code>, then <code>pip uninstall glowback</code>, or delete the .exe. The LEDs return to the effect set in the monitor's menu.</p>
+    <details><summary>Which monitors are supported?</summary><p>Any monitor whose rear RGB lighting can be controlled through Windows Dynamic Lighting or OpenRGB. Run glowback --list, or look for your monitor in Settings → Personalization → Dynamic Lighting.</p></details>
+    <details><summary>How do I sync my monitor's RGB lighting with what's on screen?</summary><p>Install Glowback and turn off Windows Dynamic Lighting for the monitor. The LEDs then follow the picture automatically.</p></details>
+    <details><summary>Can I get screen-synced ambient light without an LED strip?</summary><p>Yes, if your monitor already has rear RGB LEDs that Windows Dynamic Lighting or OpenRGB can control. Otherwise, the DIY guide adds a strip for about $10.</p></details>
+    <details><summary>Does it work with HDR, fullscreen games and movies?</summary><p>Yes. GPU capture (DXGI) handles fullscreen games, video players and HDR, and movie black bars are ignored. DRM-protected streams are usually blacked out by Windows for every capture tool.</p></details>
+    <details><summary>How do I uninstall Glowback?</summary><p>Settings → Apps → Installed apps → Glowback → Uninstall. The LEDs go back to the device's own effect.</p></details>
 
-  <footer>
-    Glowback is free software under the MIT license. Ambilight is a trademark of Koninklijke Philips N.V. / TP Vision. AOC and AGON are trademarks of their respective owners. Glowback is an independent project and is not affiliated with them.
-  </footer>
+  <footer>Glowback is free software under the MIT license, made by <a href="https://github.com/Ilyomix">Ilyomix</a>. Ambilight is a trademark of Koninklijke Philips N.V. / TP Vision; other product names are trademarks of their owners. Glowback is an independent project, not affiliated with them. Inter: SIL Open Font License.</footer>
 </div>
 </body>
 </html>

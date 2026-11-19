@@ -1,0 +1,139 @@
+﻿; Glowback Windows installer (Inno Setup 6.3+). Built by .github/workflows/release.yml:
+;   ISCC /DMyAppVersion=1.2.3 installer\glowback.iss
+; Expects dist\Glowback\ (PyInstaller --onedir, no console) and dist\glowback.exe (command line).
+
+#ifndef MyAppVersion
+  #define MyAppVersion "0.0.0"
+#endif
+
+[Setup]
+AppId={{8E1F5C2A-6B7D-4E7A-9C51-3F2B7A9D0C41}
+AppName=Glowback
+AppVersion={#MyAppVersion}
+AppVerName=Glowback {#MyAppVersion}
+AppPublisher=Ilyomix
+AppPublisherURL=https://github.com/Ilyomix/glowback
+AppSupportURL=https://github.com/Ilyomix/glowback/issues
+AppUpdatesURL=https://github.com/Ilyomix/glowback/releases
+AppComments=Ambient light for the RGB LEDs on the back of your monitor
+DefaultDirName={autopf}\Glowback
+DisableDirPage=auto
+DisableProgramGroupPage=yes
+PrivilegesRequired=lowest
+PrivilegesRequiredOverridesAllowed=dialog
+ArchitecturesAllowed=x64compatible
+ArchitecturesInstallIn64BitMode=x64compatible
+MinVersion=10.0
+OutputDir=..\dist
+OutputBaseFilename=GlowbackSetup
+SetupIconFile=..\assets\glowback.ico
+UninstallDisplayIcon={app}\Glowback.exe
+UninstallDisplayName=Glowback
+ShowLanguageDialog=auto
+Compression=lzma2/max
+SolidCompression=yes
+WizardStyle=modern
+CloseApplications=yes
+RestartApplications=no
+VersionInfoVersion={#MyAppVersion}
+VersionInfoDescription=Glowback installer
+
+[Languages]
+Name: "english"; MessagesFile: "compiler:Default.isl"
+Name: "french"; MessagesFile: "compiler:Languages\French.isl"
+Name: "spanish"; MessagesFile: "compiler:Languages\Spanish.isl"
+Name: "german"; MessagesFile: "compiler:Languages\German.isl"
+Name: "italian"; MessagesFile: "compiler:Languages\Italian.isl"
+Name: "brazilianportuguese"; MessagesFile: "compiler:Languages\BrazilianPortuguese.isl"
+Name: "portuguese"; MessagesFile: "compiler:Languages\Portuguese.isl"
+
+[CustomMessages]
+; English is the default for every language; the lines below override it
+Tools=Glowback tools
+TestLeds=Test the LEDs (orientation)
+Calibrate=Calibrate the white balance
+Comment=Ambient light for the RGB LEDs on the back of your monitor
+DynamicLighting=Tip: turn off Windows Dynamic Lighting for your monitor (Settings > Personalization > Dynamic Lighting), otherwise Windows and Glowback fight over the LEDs.
+french.Tools=Outils Glowback
+french.TestLeds=Tester les LED (orientation)
+french.Calibrate=Calibrer la balance des blancs
+french.Comment=Lumière d'ambiance pour les LED RGB au dos de votre écran
+french.DynamicLighting=Astuce : désactivez l'Éclairage dynamique de Windows pour votre écran (Paramètres > Personnalisation > Éclairage dynamique), sinon Windows et Glowback se disputent les LED.
+spanish.Tools=Herramientas de Glowback
+spanish.TestLeds=Probar los LED (orientación)
+spanish.Calibrate=Calibrar el balance de blancos
+spanish.Comment=Luz ambiental para los LED RGB de la parte trasera de tu monitor
+spanish.DynamicLighting=Consejo: desactiva la Iluminación dinámica de Windows para tu monitor (Configuración > Personalización > Iluminación dinámica); si no, Windows y Glowback se disputarán los LED.
+german.Tools=Glowback-Werkzeuge
+german.TestLeds=LEDs testen (Ausrichtung)
+german.Calibrate=Weißabgleich kalibrieren
+german.Comment=Umgebungslicht für die RGB-LEDs auf der Rückseite deines Monitors
+german.DynamicLighting=Tipp: Schalte die dynamische Beleuchtung von Windows für deinen Monitor aus (Einstellungen > Personalisierung > Dynamische Beleuchtung), sonst streiten sich Windows und Glowback um die LEDs.
+italian.Tools=Strumenti di Glowback
+italian.TestLeds=Prova i LED (orientamento)
+italian.Calibrate=Calibra il bilanciamento del bianco
+italian.Comment=Luce ambientale per i LED RGB sul retro del tuo monitor
+italian.DynamicLighting=Suggerimento: disattiva l'Illuminazione dinamica di Windows per il tuo monitor (Impostazioni > Personalizzazione > Illuminazione dinamica), altrimenti Windows e Glowback si contendono i LED.
+brazilianportuguese.Tools=Ferramentas do Glowback
+brazilianportuguese.TestLeds=Testar os LEDs (orientação)
+brazilianportuguese.Calibrate=Calibrar o balanço de branco
+brazilianportuguese.Comment=Luz ambiente para os LEDs RGB na traseira do seu monitor
+brazilianportuguese.DynamicLighting=Dica: desative a Iluminação dinâmica do Windows para o seu monitor (Configurações > Personalização > Iluminação dinâmica), senão o Windows e o Glowback disputam os LEDs.
+portuguese.Tools=Ferramentas do Glowback
+portuguese.TestLeds=Testar os LEDs (orientação)
+portuguese.Calibrate=Calibrar o equilíbrio de brancos
+portuguese.Comment=Luz ambiente para os LEDs RGB na traseira do seu monitor
+portuguese.DynamicLighting=Dica: desative a Iluminação dinâmica do Windows para o seu monitor (Definições > Personalização > Iluminação dinâmica), caso contrário o Windows e o Glowback disputam os LEDs.
+
+[Tasks]
+Name: "autostart"; Description: "{cm:AutoStartProgram,Glowback}"; GroupDescription: "{cm:AutoStartProgramGroupDescription}"
+Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
+
+[Files]
+Source: "..\dist\Glowback\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "..\dist\glowback.exe"; DestDir: "{app}"; DestName: "glowback-cli.exe"; Flags: ignoreversion
+Source: "..\LICENSE"; DestDir: "{app}"; DestName: "LICENSE.txt"; Flags: ignoreversion
+
+[Icons]
+Name: "{autoprograms}\Glowback"; Filename: "{app}\Glowback.exe"; Comment: "{cm:Comment}"
+Name: "{autoprograms}\{cm:Tools}\{cm:TestLeds}"; Filename: "{app}\glowback-cli.exe"; Parameters: "--test --pause-at-end"; IconFilename: "{app}\Glowback.exe"
+Name: "{autoprograms}\{cm:Tools}\{cm:Calibrate}"; Filename: "{app}\glowback-cli.exe"; Parameters: "--calibrate --pause-at-end"; IconFilename: "{app}\Glowback.exe"
+Name: "{autodesktop}\Glowback"; Filename: "{app}\Glowback.exe"; Comment: "{cm:Comment}"; Tasks: desktopicon
+
+[Registry]
+; Same value the tray menu's "Start with Windows" toggles
+Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "Glowback"; ValueData: """{app}\Glowback.exe"" --background --from-autostart"; Tasks: autostart; Flags: uninsdeletevalue
+
+[Run]
+Filename: "{app}\Glowback.exe"; Description: "{cm:LaunchProgram,Glowback}"; Flags: nowait postinstall skipifsilent
+; In-app updates run this installer silently with /RELAUNCH=1: start the new version afterwards
+Filename: "{app}\Glowback.exe"; Parameters: "--after-update"; Flags: nowait; Check: ShouldRelaunch
+
+[UninstallRun]
+; Stops Glowback (LEDs go back to the monitor's own effect) and removes startup entry, settings and logs
+Filename: "{app}\Glowback.exe"; Parameters: "--uninstall"; RunOnceId: "GlowbackCleanup"; Flags: runhidden waituntilterminated
+
+[Code]
+function ShouldRelaunch: Boolean;
+begin
+  Result := ExpandConstant('{param:RELAUNCH|0}') = '1';
+end;
+
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+var
+  ResultCode: Integer;
+begin
+  Result := '';
+  { An older Glowback may be running: ask it to hand the LEDs back and quit before files are replaced }
+  if FileExists(ExpandConstant('{app}\Glowback.exe')) then
+  begin
+    Exec(ExpandConstant('{app}\Glowback.exe'), '--stop', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+    Sleep(1500);
+  end;
+end;
+
+procedure CurPageChanged(CurPageID: Integer);
+begin
+  if CurPageID = wpFinished then
+    WizardForm.FinishedLabel.Caption := WizardForm.FinishedLabel.Caption + #13#10#13#10 + CustomMessage('DynamicLighting');
+end;

@@ -4,15 +4,14 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "glowback"
-version = "0.2.0"
-description = "Ambilight for monitors with RGB LEDs on the back: real-time, per-LED screen sync for Windows Dynamic Lighting (HID LampArray) and OpenRGB devices. HDR, fullscreen video, tray icon."
+version = "0.3.0"
+description = "Ambient light for monitors with RGB LEDs on the back: every LED follows the screen in real time. Windows Dynamic Lighting (HID LampArray) and OpenRGB devices, HDR, tray app, 6 languages."
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
 requires-python = ">=3.9"
 authors = [{ name = "Ilyomix" }]
-keywords = ["ambilight", "ambient-light", "bias-lighting", "rgb", "screen-sync", "dynamic-lighting",
-            "lamparray", "hid", "monitor", "aoc", "agon", "light-fx", "windows", "gaming", "led"]
+keywords = ["ambient-light", "bias-lighting", "rgb", "screen-sync", "dynamic-lighting", "lamparray", "openrgb", "hid", "monitor", "windows", "gaming", "led", "ambilight-alternative"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Environment :: Console",

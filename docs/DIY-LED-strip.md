@@ -1,4 +1,4 @@
-# DIY: add Ambilight to any monitor with a $5 RP2040 board and an LED strip
+# DIY: add ambient light to any monitor with a $5 RP2040 board and an LED strip
 
 Your monitor has no RGB on the back? Stick an addressable LED strip behind it and drive it with a Raspberry Pi Pico (RP2040). The Pico shows up in Windows as a **Dynamic Lighting (HID LampArray) device**, so Glowback drives it like a built-in monitor LED. No serial protocol and no extra software are needed.
 
