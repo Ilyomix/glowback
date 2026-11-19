@@ -1341,19 +1341,26 @@ class Output:
         self.box = self.box_grid = None  # letterbox detection, with hysteresis
         self.cand, self.cand_since = None, 0.0
         self.wb = (1.0, 1.0, 1.0)  # white balance multipliers (glowback --calibrate)
+        self.uv = []  # lamp positions 0..1, for the app's live preview
 
 
 class State:
     """Live settings shared between the capture loop and the tray icon."""
 
     def __init__(self, args, enabled=True):
+        saved = load_settings()
         self.enabled = enabled
         self.mode = args.mode
         self.brightness = max(0.0, min(100.0, float(args.brightness)))
-        self.check_updates = bool(load_settings().get("check_updates", True))
+        self.check_updates = bool(saved.get("check_updates", True))
         self.leds = 0              # LEDs currently driven (shown in the tray menu)
         self.new_version = None    # newer version found on GitHub (not `update`: that is the method below)
         self.version = 0
+        self.rules = clean_rules(saved.get("sync_when"))  # sync conditions; none = always follow the screen
+        self.waiting, self.rule_hit = False, None  # no condition holds: the LEDs show their own effect
+        self.screens = []          # names of the screens the LEDs follow
+        self.preview = []          # [(lamp positions 0..1, colors)] per device, for the app's live preview
+        self.notify = lambda: None  # the tray: something shown in the app or the panel changed
 
     def update(self, **kw):
         for k, v in kw.items():
@@ -1363,6 +1370,25 @@ class State:
         if "check_updates" in kw:  # only when switched here: the installer and --check-updates also set it
             saved["check_updates"] = self.check_updates
         save_settings(saved)
+        self.notify()
+
+    def set_rules(self, rules, save=True):
+        """New sync conditions (the app, or glowback --sync-when through settings.json)."""
+        rules = clean_rules(rules)
+        if save:
+            save_settings({"sync_when": rules})
+        if rules != self.rules:
+            self.rules = rules
+            if not rules:
+                self.set_match(None)
+            self.notify()
+
+    def set_match(self, rule):
+        """What the capture loop found: the condition that holds now, or None."""
+        waiting = bool(self.rules) and rule is None
+        if (waiting, rule) != (self.waiting, self.rule_hit):
+            self.waiting, self.rule_hit = waiting, rule
+            self.notify()
 
 
 def make_grabber(monitor, args, failed):
@@ -1388,6 +1414,9 @@ def run(args, stop, state=None):
     t_prev = time.perf_counter()
     warned = paused = False
     seen, shape = -1, None
+    watch, rule_t, file_t, file_mtime = AppWatch(), 0.0, 0.0, None
+    rule_monitors, rule_monitors_t = [], -99.0
+    led_screens = load_settings().get("led_screens") or []  # the screens the LEDs followed last time
     try:
         while True:
             t0 = time.perf_counter()
@@ -1398,8 +1427,30 @@ def run(args, stop, state=None):
                 for o in outputs.values():
                     o.last = None
 
-            # ---- paused from the tray: the LEDs go back to the device's own effect
-            if not state.enabled:
+            # ---- sync conditions (the app's "When to sync" page, glowback --sync-when), checked 4 times a second
+            if t0 >= file_t:  # changes made from the command line land in settings.json
+                file_t = t0 + 2
+                try:
+                    mtime = os.stat(SETTINGS_PATH).st_mtime
+                except OSError:
+                    mtime = None
+                if mtime != file_mtime:
+                    file_mtime = mtime
+                    state.set_rules(load_settings().get("sync_when"), save=False)
+            if state.enabled and state.rules and t0 >= rule_t:
+                rule_t = t0 + 0.25
+                if t0 - rule_monitors_t > 5:
+                    rule_monitors, rule_monitors_t = list_monitors(), t0
+                leds = {o.monitor.device for o in outputs.values() if o.monitor}
+                if not leds:  # not connected yet: the screens the LEDs followed last time, else the primary one
+                    leds = {m.device for m in rule_monitors if (m.name or m.device) in led_screens}
+                    leds = leds or {m.device for m in rule_monitors if m.primary}
+                state.set_match(conditions_met(state.rules, leds, rule_monitors, watch))
+            elif not state.rules and state.waiting:
+                state.set_match(None)
+
+            # ---- paused from the tray, or no sync condition holds: the LEDs go back to the device's own effect
+            if not state.enabled or state.waiting:
                 if not paused:
                     paused = True
                     for o in outputs.values():
@@ -1407,7 +1458,9 @@ def run(args, stop, state=None):
                             o.dev.set_autonomous(True)
                         except OSError:
                             pass
-                    log("Paused: LEDs handed back to the device.")
+                    state.preview = []
+                    log("Paused: LEDs handed back to the device." if not state.enabled else
+                        "No sync condition holds: LEDs handed back to the device.")
                 if stop.wait(0.25):
                     break
                 continue
@@ -1416,7 +1469,8 @@ def run(args, stop, state=None):
                 next_keep = 0.0
                 for o in outputs.values():
                     o.smooth = o.last = None
-                log("Resumed.")
+                hit = state.rule_hit
+                log(f"Resumed: {hit['app'] or 'any app'} {hit['when']}." if hit else "Resumed.")
 
             # ---- (re)scan devices and screens: hot-plug, monitor power cycles, resolution changes
             if t0 >= next_scan:
@@ -1434,6 +1488,7 @@ def run(args, stop, state=None):
                         continue
                     o = outputs[dev.path] = Output(dev)
                     o.wb = args.white_balance or tuple(load_settings().get("white_balance", {}).get(device_key(dev), o.wb))
+                    o.uv = lamp_uv(dev.lamps, args.mirror, args.flip) if dev.lamps else []
                     period = max(period, dev.min_interval)
                     state.leds = sum(len(x.dev.lamps) for x in outputs.values())
                     log(f"Connected: {dev.name} ({len(dev.lamps)} LEDs, {kind_label(dev)})")
@@ -1450,6 +1505,11 @@ def run(args, stop, state=None):
                                 log(f"  {o.dev.name}  <-  screen {m.label()}")
                     for rect in list(grabbers):
                         grabbers.pop(rect).close()
+                    names = sorted({o.monitor.name or o.monitor.device for o in outputs.values() if o.monitor})
+                    state.screens = names
+                    if names and names != led_screens:  # remembered for the "LED screen" condition at next start
+                        led_screens = names
+                        save_settings({"led_screens": names})
                 elif args.capture == "auto":
                     for rect, g in list(grabbers.items()):  # retry DXGI (e.g. it failed on the lock screen)
                         if g.kind == "GDI":
@@ -1553,6 +1613,7 @@ def run(args, stop, state=None):
                     state.leds = sum(len(x.dev.lamps) for x in outputs.values())
                     next_scan = min(next_scan, t0 + 2)
 
+            state.preview = [(o.uv, o.last) for o in outputs.values() if o.last and o.uv]  # the app's live preview
             frames += 1
             if args.verbose and t0 - t_stat >= 2:
                 print(f"  {frames / (t0 - t_stat):5.1f} fps   frame {1000 * (time.perf_counter() - t0):4.1f} ms   "
@@ -2740,6 +2801,338 @@ def dock_flyout(pt, w, h, gap, work, screen, bar):
         y = clamp(pt.y - h // 2, work.top + gap, work.bottom - h - gap)
         x = max(rc.right, work.left) + gap if edge == 0 else min(rc.left, work.right) - w - gap
     return clamp(x, screen.left, screen.right - w), clamp(y, screen.top, screen.bottom - h)
+
+
+# =============================================================================
+# Sync conditions: follow the screen only while an app runs, is in front or full screen, on a given screen
+# =============================================================================
+WHEN = ("running", "foreground", "fullscreen")
+DESKTOP_CLASSES = ("Progman", "WorkerW", "Shell_TrayWnd", "Shell_SecondaryTrayWnd")
+WNDENUMPROC = ctypes.WINFUNCTYPE(wt.BOOL, HANDLE, wt.LPARAM)
+version_dll = ctypes.WinDLL("version")
+
+
+class PROCESSENTRY32W(ctypes.Structure):
+    _fields_ = [("dwSize", wt.DWORD), ("cntUsage", wt.DWORD), ("th32ProcessID", wt.DWORD),
+                ("th32DefaultHeapID", ctypes.c_size_t), ("th32ModuleID", wt.DWORD), ("cntThreads", wt.DWORD),
+                ("th32ParentProcessID", wt.DWORD), ("pcPriClassBase", ctypes.c_long), ("dwFlags", wt.DWORD),
+                ("szExeFile", ctypes.c_wchar * 260)]
+
+
+_sig(user32.GetForegroundWindow, HANDLE)
+_sig(user32.GetWindowThreadProcessId, wt.DWORD, HANDLE, ctypes.POINTER(wt.DWORD))
+_sig(user32.EnumWindows, wt.BOOL, WNDENUMPROC, wt.LPARAM)
+_sig(user32.EnumChildWindows, wt.BOOL, HANDLE, WNDENUMPROC, wt.LPARAM)
+_sig(user32.IsWindowVisible, wt.BOOL, HANDLE)
+_sig(user32.IsIconic, wt.BOOL, HANDLE)
+_sig(user32.GetWindowRect, wt.BOOL, HANDLE, ctypes.POINTER(wt.RECT))
+_sig(user32.GetWindowLongW, ctypes.c_long, HANDLE, ctypes.c_int)
+_sig(user32.GetClassNameW, ctypes.c_int, HANDLE, wt.LPWSTR, ctypes.c_int)
+_sig(user32.MonitorFromWindow, HANDLE, HANDLE, wt.DWORD)
+_sig(k32.OpenProcess, HANDLE, wt.DWORD, wt.BOOL, wt.DWORD)
+_sig(k32.QueryFullProcessImageNameW, wt.BOOL, HANDLE, wt.DWORD, wt.LPWSTR, ctypes.POINTER(wt.DWORD))
+_sig(k32.CreateToolhelp32Snapshot, HANDLE, wt.DWORD, wt.DWORD)
+_sig(k32.Process32FirstW, wt.BOOL, HANDLE, ctypes.POINTER(PROCESSENTRY32W))
+_sig(k32.Process32NextW, wt.BOOL, HANDLE, ctypes.POINTER(PROCESSENTRY32W))
+_sig(dwmapi.DwmGetWindowAttribute, ctypes.c_long, HANDLE, wt.DWORD, ctypes.c_void_p, wt.DWORD)
+_sig(shell32.SHQueryUserNotificationState, ctypes.c_long, ctypes.POINTER(ctypes.c_int))
+_sig(version_dll.GetFileVersionInfoSizeW, wt.DWORD, wt.LPCWSTR, ctypes.POINTER(wt.DWORD))
+_sig(version_dll.GetFileVersionInfoW, wt.BOOL, wt.LPCWSTR, wt.DWORD, wt.DWORD, ctypes.c_void_p)
+_sig(version_dll.VerQueryValueW, wt.BOOL, ctypes.c_void_p, wt.LPCWSTR, ctypes.POINTER(ctypes.c_void_p),
+     ctypes.POINTER(wt.UINT))
+
+
+def app_key(name):
+    r"""'C:\Program Files\VLC\VLC.EXE' or 'vlc' -> 'vlc.exe'; '', '*' or 'any' -> '' (any app)."""
+    name = os.path.basename((name or "").strip().strip('"')).lower()
+    if name in ("", "*", "any"):
+        return ""
+    return name if name.endswith(".exe") else name + ".exe"
+
+
+def clean_rules(rules):
+    """Valid sync conditions only: {"app": "vlc.exe" ("" = any app), "when": one of WHEN,
+    "screen": "" (any), "leds" (the screen the LEDs follow) or a screen name, "name": what the app is called}."""
+    out = []
+    for r in rules if isinstance(rules, list) else []:
+        if not isinstance(r, dict):
+            continue
+        rule = {"app": app_key(r.get("app", "")), "when": r.get("when") if r.get("when") in WHEN else "foreground",
+                "screen": str(r.get("screen") or "")[:80]}
+        if rule["app"] and r.get("name"):
+            rule["name"] = str(r["name"])[:80]
+        if rule["when"] == "running" and not rule["app"] and not rule["screen"]:
+            continue  # "any app is running": always true, says nothing
+        if all({k: v for k, v in o.items() if k != "name"} != {k: v for k, v in rule.items() if k != "name"}
+               for o in out):
+            out.append(rule)
+    return out[:32]
+
+
+def process_path(pid):
+    h = k32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION: works for most apps, elevated too
+    if not h:
+        return ""
+    try:
+        buf, size = ctypes.create_unicode_buffer(1024), wt.DWORD(1024)
+        return buf.value if k32.QueryFullProcessImageNameW(h, 0, buf, byref(size)) else ""
+    finally:
+        k32.CloseHandle(h)
+
+
+def running_processes():
+    """pid -> exe name (lower case) of every running process."""
+    out = {}
+    snap = k32.CreateToolhelp32Snapshot(2, 0)  # TH32CS_SNAPPROCESS
+    if not snap or snap == INVALID_HANDLE:
+        return out
+    try:
+        e = PROCESSENTRY32W()
+        e.dwSize = sizeof(e)
+        ok = k32.Process32FirstW(snap, byref(e))
+        while ok:
+            out[e.th32ProcessID] = e.szExeFile.lower()
+            ok = k32.Process32NextW(snap, byref(e))
+    finally:
+        k32.CloseHandle(snap)
+    return out
+
+
+def app_description(path):
+    """An app's own name ("VLC media player") from its version information, else its file name without .exe."""
+    fallback = os.path.splitext(os.path.basename(path))[0]
+    try:
+        size = version_dll.GetFileVersionInfoSizeW(path, None)
+        if not size:
+            return fallback
+        data = ctypes.create_string_buffer(size)
+        if not version_dll.GetFileVersionInfoW(path, 0, size, data):
+            return fallback
+        ptr, n = ctypes.c_void_p(), wt.UINT()
+        langs = []
+        if version_dll.VerQueryValueW(data, "\\VarFileInfo\\Translation", byref(ptr), byref(n)) and n.value >= 4:
+            pairs = (ctypes.c_uint16 * (n.value // 2)).from_address(ptr.value)
+            langs = [(pairs[i], pairs[i + 1]) for i in range(0, len(pairs) - 1, 2)]
+        for lang, cp in langs + [(0x0409, 0x04B0), (0x0409, 0x04E4), (0x0000, 0x04B0)]:
+            key = f"\\StringFileInfo\\{lang:04x}{cp:04x}\\FileDescription"
+            if version_dll.VerQueryValueW(data, key, byref(ptr), byref(n)) and n.value > 1 and ptr.value:
+                text = ctypes.wstring_at(ptr.value).strip()
+                if text:
+                    return text[:60]
+    except (OSError, ValueError):
+        pass
+    return fallback
+
+
+def cloaked(hwnd):
+    """Windows hidden by DWM (other virtual desktops, suspended Store apps) count as not shown."""
+    v = wt.DWORD(0)
+    return dwmapi.DwmGetWindowAttribute(hwnd, 14, byref(v), 4) == 0 and v.value != 0  # DWMWA_CLOAKED
+
+
+class Foreground:
+    __slots__ = ("hwnd", "pid", "exe", "device", "fullscreen")
+
+
+class AppWatch:
+    """What sync conditions look at: the window in front, the running apps, the screens their windows are on.
+    Everything is cached briefly, so checking four times a second costs next to nothing."""
+
+    def __init__(self):
+        self._exe = {}  # pid -> (exe, when)
+        self._procs, self._procs_t = {}, -99.0
+        self._wins, self._wins_t = {}, -99.0
+
+    def exe_of(self, pid):
+        now = time.monotonic()
+        hit = self._exe.get(pid)
+        if hit and now - hit[1] < 10:
+            return hit[0]
+        exe = os.path.basename(process_path(pid)).lower() or self.processes().get(pid, "")
+        if len(self._exe) > 512:
+            self._exe.clear()
+        self._exe[pid] = (exe, now)
+        return exe
+
+    def processes(self):
+        """pid -> exe of every running process, refreshed every 2 seconds at most."""
+        now = time.monotonic()
+        if now - self._procs_t >= 2:
+            self._procs, self._procs_t = running_processes(), now
+        return self._procs
+
+    @staticmethod
+    def window_pid(hwnd):
+        pid = wt.DWORD()
+        user32.GetWindowThreadProcessId(hwnd, byref(pid))
+        return pid.value
+
+    def owner(self, hwnd):
+        """(pid, exe) of the app a window belongs to. Store apps live inside ApplicationFrameHost: look past it."""
+        pid = self.window_pid(hwnd)
+        exe = self.exe_of(pid)
+        if exe == "applicationframehost.exe":
+            inner = []
+
+            def cb(child, _):
+                p = self.window_pid(child)
+                if p != pid:
+                    inner.append(p)
+                    return False
+                return True
+
+            user32.EnumChildWindows(hwnd, WNDENUMPROC(cb), 0)
+            if inner:
+                pid, exe = inner[0], self.exe_of(inner[0]) or exe
+        return pid, exe
+
+    @staticmethod
+    def screen_of(hwnd):
+        """(device name, monitor rectangle) of the screen a window is on."""
+        mi = MONITORINFOEXW()
+        mi.cbSize = sizeof(mi)
+        hmon = user32.MonitorFromWindow(hwnd, 2)  # MONITOR_DEFAULTTONEAREST
+        if not hmon or not user32.GetMonitorInfoW(hmon, byref(mi)):
+            return "", None
+        return mi.szDevice, mi.rcMonitor
+
+    @staticmethod
+    def class_of(hwnd):
+        buf = ctypes.create_unicode_buffer(64)
+        user32.GetClassNameW(hwnd, buf, 64)
+        return buf.value
+
+    def foreground(self):
+        hwnd = user32.GetForegroundWindow()
+        if not hwnd:
+            return None
+        f = Foreground()
+        f.hwnd = hwnd
+        f.pid, f.exe = self.owner(hwnd)
+        f.device, mrc = self.screen_of(hwnd)
+        f.fullscreen = False
+        if mrc and self.class_of(hwnd) not in DESKTOP_CLASSES:
+            rc = wt.RECT()
+            user32.GetWindowRect(hwnd, byref(rc))
+            if rc.left <= mrc.left and rc.top <= mrc.top and rc.right >= mrc.right and rc.bottom >= mrc.bottom:
+                captioned = user32.GetWindowLongW(hwnd, -16) & 0x00C00000 == 0x00C00000  # WS_CAPTION
+                quns = ctypes.c_int(0)  # what Windows itself calls full screen (games, videos, presentations)
+                busy = shell32.SHQueryUserNotificationState(byref(quns)) == 0 and quns.value in (2, 3, 4)
+                f.fullscreen = not captioned or busy
+        return f
+
+    def windows(self):
+        """exe -> screens (device names) where the app shows a window, refreshed every second at most."""
+        now = time.monotonic()
+        if now - self._wins_t < 1:
+            return self._wins
+        found = {}
+
+        def cb(hwnd, _):
+            if user32.IsWindowVisible(hwnd) and not user32.IsIconic(hwnd) and not cloaked(hwnd) \
+                    and self.class_of(hwnd) not in DESKTOP_CLASSES:
+                _, exe = self.owner(hwnd)
+                device, _ = self.screen_of(hwnd)
+                if exe and device:
+                    found.setdefault(exe, set()).add(device)
+            return True
+
+        user32.EnumWindows(WNDENUMPROC(cb), 0)
+        self._wins, self._wins_t = found, now
+        return found
+
+    def open_apps(self):
+        """Apps with a window open now, for the app picker: [(exe, name, path)], sorted by name."""
+        own, seen, apps = os.getpid(), set(), []
+
+        def cb(hwnd, _):
+            if user32.IsWindowVisible(hwnd) and not user32.IsIconic(hwnd) and not cloaked(hwnd) \
+                    and not user32.GetWindow(hwnd, 4) and user32.GetWindowTextLengthW(hwnd) > 0 \
+                    and self.class_of(hwnd) not in DESKTOP_CLASSES:  # GW_OWNER: top windows only, with a title
+                pid, exe = self.owner(hwnd)
+                if exe and exe not in seen and pid != own and exe not in ("applicationframehost.exe", "textinputhost.exe"):
+                    seen.add(exe)
+                    path = process_path(pid)
+                    apps.append((exe, app_description(path) if path else exe[:-4], path))
+            return True
+
+        user32.EnumWindows(WNDENUMPROC(cb), 0)
+        return sorted(apps, key=lambda a: a[1].lower())
+
+
+_sig(user32.GetWindow, HANDLE, HANDLE, wt.UINT)
+_sig(user32.GetWindowTextLengthW, ctypes.c_int, HANDLE)
+
+
+def screen_devices(screen, leds, monitors):
+    r"""Device names (\\.\DISPLAYn) a condition's screen stands for; None = any screen."""
+    if not screen:
+        return None
+    if screen == "leds":
+        return set(leds)
+    c = _norm(screen)
+    return {m.device for m in monitors if c and (c == _norm(m.device) or c == _norm(m.name) or c in _norm(m.name + m.pnp))}
+
+
+def conditions_met(rules, leds, monitors, watch):
+    """The first sync condition that holds now, or None. (No conditions at all: Glowback always follows the screen.)"""
+    fg = None
+    for r in rules:
+        app, screens = r["app"], screen_devices(r["screen"], leds, monitors)
+        if r["when"] == "running":
+            if screens is None:
+                ok = app in watch.processes().values()
+            else:
+                ok = any(devices & screens for exe, devices in watch.windows().items() if not app or exe == app)
+        else:
+            fg = fg or watch.foreground()
+            ok = (fg is not None and (not app or fg.exe == app) and (screens is None or fg.device in screens)
+                  and (r["when"] == "foreground" or fg.fullscreen))
+        if ok:
+            return r
+    return None
+
+
+def parse_rule(text, monitors=()):
+    """Command line form WHEN:APP[@SCREEN] -> a condition, e.g. foreground:vlc.exe, fullscreen:*@leds, running:steam."""
+    when, _, rest = text.partition(":")
+    when = {"front": "foreground", "full": "fullscreen", "run": "running"}.get(when.strip().lower(), when.strip().lower())
+    if when not in WHEN or not rest.strip():
+        raise ValueError(text)
+    app, _, screen = rest.partition("@")
+    screen = screen.strip()
+    if screen.lower() in ("leds", "led", "glowback"):
+        screen = "leds"
+    elif screen.isdigit():  # a number from glowback --list: kept as the screen's name, which survives reboots
+        m = next((m for m in monitors if m.index == int(screen)), None)
+        if m is None:
+            raise ValueError(text)
+        screen = m.name or m.device
+    rules = clean_rules([{"app": app, "when": when, "screen": screen}])
+    if not rules:
+        raise ValueError(text)
+    return rules[0]
+
+
+def cmd_sync_when(values):
+    """glowback --sync-when WHEN:APP[@SCREEN] ... (or always): saved; a running Glowback follows within 2 seconds."""
+    usage = ("usage: glowback --sync-when WHEN:APP[@SCREEN] [--sync-when ...]   or   --sync-when always\n"
+             "  WHEN: running, foreground or fullscreen; APP: an .exe name or * for any app;\n"
+             "  SCREEN: leds (the screen the LEDs follow), a number from --list, or a screen name")
+    if any(v.strip().lower() in ("always", "off", "none") for v in values):
+        save_settings({"sync_when": []})
+        print("Glowback follows the screen all the time.")
+        return
+    monitors = list_monitors()
+    try:
+        rules = clean_rules([parse_rule(v, monitors) for v in values])
+    except ValueError as e:
+        sys.exit(f"Not understood: {e}\n{usage}")
+    save_settings({"sync_when": rules})
+    print("Glowback follows the screen only while one of these holds:")
+    for r in rules:
+        where = {"": "", "leds": " on the LED screen"}.get(r["screen"], f" on screen {r['screen']}")
+        print(f"  {r['app'] or 'any app'} {dict(running='is running', foreground='is in front', fullscreen='is full screen')[r['when']]}{where}")
 
 
 class Tray:
@@ -4153,6 +4546,10 @@ def parse_args(argv=None):
                    help="OpenRGB SDK server whose devices are driven too (default: auto-detect on this PC; off to disable)")
     p.add_argument("--home-assistant", metavar="mqtt://USER:PASSWORD@HOST[:PORT]|off",
                    help="show Glowback in Home Assistant through its MQTT broker (saved; off to remove it)")
+    p.add_argument("--sync-when", action="append", metavar="WHEN:APP[@SCREEN]|always",
+                   help="follow the screen only while one of these holds (repeatable, saved): WHEN is running, "
+                        "foreground or fullscreen; APP an .exe name or * for any app; SCREEN leds (the screen the "
+                        "LEDs follow), a number from --list or a name. 'always' removes the conditions")
     p.add_argument("--strip-start", default="bottom-left",
                    choices=["bottom-left", "bottom-center", "bottom-right", "top-left", "top-right"],
                    help="OpenRGB LED strips: where the first LED is (strip runs around the screen)")
@@ -4213,6 +4610,9 @@ def main(argv=None):
         return
     if args.home_assistant:
         cmd_home_assistant(args.home_assistant)
+        return
+    if args.sync_when:
+        cmd_sync_when(args.sync_when)
         return
     if args.diy_layout:
         cmd_diy_layout(args.diy_layout)
