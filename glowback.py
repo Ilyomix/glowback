@@ -1705,6 +1705,31 @@ STRINGS = {
         'update_to': 'Update to {version}',
         'update_title': 'Glowback {version} is available',
         'update_text': 'Click here to download it.',
+        'ha_setup': 'Set up',
+        'ha_connected': 'Connected',
+        'ha_connecting': 'Connecting…',
+        'ha_error': 'Not connected',
+        'ha_intro': 'Glowback appears in Home Assistant as a light you can switch from dashboards, automations and Google Assistant. It connects through MQTT: install the Mosquitto broker app in Home Assistant, then sign in here with a Home Assistant user.',
+        'ha_guide': 'Step-by-step guide',
+        'ha_address': 'Address',
+        'ha_port': 'Port',
+        'ha_user': 'User',
+        'ha_password': 'Password',
+        'ha_user_hint': 'Home Assistant user',
+        'ha_password_saved': 'Saved',
+        'ha_connect': 'Connect',
+        'ha_cancel': 'Cancel',
+        'ha_disconnect': 'Disconnect',
+        'ha_testing': 'Connecting to Home Assistant…',
+        'ha_need_address': 'Enter the address of Home Assistant.',
+        'ha_err_address': 'This address was not found on your network.',
+        'ha_err_broker': 'No MQTT broker answers at this address. Is the Mosquitto broker app started?',
+        'ha_err_login': 'Wrong user or password.',
+        'ha_err_refused': 'The MQTT broker refused the connection.',
+        'ha_err_tls': 'The secure connection failed.',
+        'ha_err_other': 'The connection failed ({error}).',
+        'ha_done_title': 'Connected to Home Assistant',
+        'ha_done_text': 'Glowback is in Settings › Devices & services › MQTT.',
     },
     'fr': {
         'update_downloading': 'Téléchargement de Glowback {version}…',
@@ -1754,6 +1779,31 @@ STRINGS = {
         'update_to': 'Mettre à jour vers la {version}',
         'update_title': 'Glowback {version} est disponible',
         'update_text': 'Cliquez ici pour le télécharger.',
+        'ha_setup': 'Configurer',
+        'ha_connected': 'Connecté',
+        'ha_connecting': 'Connexion…',
+        'ha_error': 'Non connecté',
+        'ha_intro': "Glowback apparaît dans Home Assistant comme une lumière à piloter depuis vos tableaux de bord, vos automatisations et Google Assistant. La connexion passe par MQTT : installez l'application Mosquitto broker dans Home Assistant, puis connectez-vous ici avec un utilisateur Home Assistant.",
+        'ha_guide': 'Guide pas à pas',
+        'ha_address': 'Adresse',
+        'ha_port': 'Port',
+        'ha_user': 'Utilisateur',
+        'ha_password': 'Mot de passe',
+        'ha_user_hint': 'Utilisateur Home Assistant',
+        'ha_password_saved': 'Enregistré',
+        'ha_connect': 'Connecter',
+        'ha_cancel': 'Annuler',
+        'ha_disconnect': 'Déconnecter',
+        'ha_testing': 'Connexion à Home Assistant…',
+        'ha_need_address': "Indiquez l'adresse de Home Assistant.",
+        'ha_err_address': 'Cette adresse est introuvable sur votre réseau.',
+        'ha_err_broker': "Aucun broker MQTT ne répond à cette adresse. L'application Mosquitto broker est-elle démarrée ?",
+        'ha_err_login': 'Utilisateur ou mot de passe incorrect.',
+        'ha_err_refused': 'Le broker MQTT a refusé la connexion.',
+        'ha_err_tls': 'La connexion sécurisée a échoué.',
+        'ha_err_other': 'La connexion a échoué ({error}).',
+        'ha_done_title': 'Connecté à Home Assistant',
+        'ha_done_text': 'Glowback est dans Paramètres › Appareils et services › MQTT.',
     },
     'es': {
         'update_downloading': 'Descargando Glowback {version}…',
@@ -1803,6 +1853,31 @@ STRINGS = {
         'update_to': 'Actualizar a {version}',
         'update_title': 'Glowback {version} está disponible',
         'update_text': 'Haz clic aquí para descargarlo.',
+        'ha_setup': 'Configurar',
+        'ha_connected': 'Conectado',
+        'ha_connecting': 'Conectando…',
+        'ha_error': 'Sin conexión',
+        'ha_intro': 'Glowback aparece en Home Assistant como una luz que puedes controlar desde los paneles, las automatizaciones y Google Assistant. Se conecta por MQTT: instala la app Mosquitto broker en Home Assistant e inicia sesión aquí con un usuario de Home Assistant.',
+        'ha_guide': 'Guía paso a paso',
+        'ha_address': 'Dirección',
+        'ha_port': 'Puerto',
+        'ha_user': 'Usuario',
+        'ha_password': 'Contraseña',
+        'ha_user_hint': 'Usuario de Home Assistant',
+        'ha_password_saved': 'Guardada',
+        'ha_connect': 'Conectar',
+        'ha_cancel': 'Cancelar',
+        'ha_disconnect': 'Desconectar',
+        'ha_testing': 'Conectando con Home Assistant…',
+        'ha_need_address': 'Indica la dirección de Home Assistant.',
+        'ha_err_address': 'No se encuentra esta dirección en tu red.',
+        'ha_err_broker': 'Ningún broker MQTT responde en esta dirección. ¿Está iniciada la app Mosquitto broker?',
+        'ha_err_login': 'Usuario o contraseña incorrectos.',
+        'ha_err_refused': 'El broker MQTT rechazó la conexión.',
+        'ha_err_tls': 'Falló la conexión segura.',
+        'ha_err_other': 'Falló la conexión ({error}).',
+        'ha_done_title': 'Conectado a Home Assistant',
+        'ha_done_text': 'Glowback está en Configuración › Dispositivos y servicios › MQTT.',
     },
     'de': {
         'update_downloading': 'Glowback {version} wird heruntergeladen …',
@@ -1852,6 +1927,31 @@ STRINGS = {
         'update_to': 'Auf {version} aktualisieren',
         'update_title': 'Glowback {version} ist verfügbar',
         'update_text': 'Zum Herunterladen hier klicken.',
+        'ha_setup': 'Einrichten',
+        'ha_connected': 'Verbunden',
+        'ha_connecting': 'Verbinde…',
+        'ha_error': 'Nicht verbunden',
+        'ha_intro': 'Glowback erscheint in Home Assistant als Licht, das du über Dashboards, Automationen und Google Assistant steuerst. Die Verbindung läuft über MQTT: Installiere in Home Assistant die App Mosquitto broker und melde dich hier mit einem Home-Assistant-Benutzer an.',
+        'ha_guide': 'Schritt-für-Schritt-Anleitung',
+        'ha_address': 'Adresse',
+        'ha_port': 'Port',
+        'ha_user': 'Benutzer',
+        'ha_password': 'Passwort',
+        'ha_user_hint': 'Home-Assistant-Benutzer',
+        'ha_password_saved': 'Gespeichert',
+        'ha_connect': 'Verbinden',
+        'ha_cancel': 'Abbrechen',
+        'ha_disconnect': 'Trennen',
+        'ha_testing': 'Verbinde mit Home Assistant…',
+        'ha_need_address': 'Gib die Adresse von Home Assistant ein.',
+        'ha_err_address': 'Diese Adresse wurde in deinem Netzwerk nicht gefunden.',
+        'ha_err_broker': 'Unter dieser Adresse antwortet kein MQTT-Broker. Läuft die App Mosquitto broker?',
+        'ha_err_login': 'Benutzer oder Passwort falsch.',
+        'ha_err_refused': 'Der MQTT-Broker hat die Verbindung abgelehnt.',
+        'ha_err_tls': 'Die sichere Verbindung ist fehlgeschlagen.',
+        'ha_err_other': 'Verbindung fehlgeschlagen ({error}).',
+        'ha_done_title': 'Mit Home Assistant verbunden',
+        'ha_done_text': 'Glowback findest du unter Einstellungen › Geräte & Dienste › MQTT.',
     },
     'it': {
         'update_downloading': 'Download di Glowback {version}…',
@@ -1901,6 +2001,31 @@ STRINGS = {
         'update_to': 'Aggiorna alla {version}',
         'update_title': 'Glowback {version} è disponibile',
         'update_text': 'Fai clic qui per scaricarlo.',
+        'ha_setup': 'Configura',
+        'ha_connected': 'Connesso',
+        'ha_connecting': 'Connessione…',
+        'ha_error': 'Non connesso',
+        'ha_intro': "Glowback compare in Home Assistant come una luce da comandare dalle dashboard, dalle automazioni e da Google Assistant. Si collega tramite MQTT: installa l'app Mosquitto broker in Home Assistant, poi accedi qui con un utente di Home Assistant.",
+        'ha_guide': 'Guida passo passo',
+        'ha_address': 'Indirizzo',
+        'ha_port': 'Porta',
+        'ha_user': 'Utente',
+        'ha_password': 'Password',
+        'ha_user_hint': 'Utente di Home Assistant',
+        'ha_password_saved': 'Salvata',
+        'ha_connect': 'Connetti',
+        'ha_cancel': 'Annulla',
+        'ha_disconnect': 'Disconnetti',
+        'ha_testing': 'Connessione a Home Assistant…',
+        'ha_need_address': "Inserisci l'indirizzo di Home Assistant.",
+        'ha_err_address': 'Questo indirizzo non è stato trovato nella tua rete.',
+        'ha_err_broker': "Nessun broker MQTT risponde a questo indirizzo. L'app Mosquitto broker è avviata?",
+        'ha_err_login': 'Utente o password errati.',
+        'ha_err_refused': 'Il broker MQTT ha rifiutato la connessione.',
+        'ha_err_tls': 'La connessione sicura non è riuscita.',
+        'ha_err_other': 'Connessione non riuscita ({error}).',
+        'ha_done_title': 'Connesso a Home Assistant',
+        'ha_done_text': 'Glowback è in Impostazioni › Dispositivi e servizi › MQTT.',
     },
     'pt': {
         'update_downloading': 'Baixando o Glowback {version}…',
@@ -1950,6 +2075,31 @@ STRINGS = {
         'update_to': 'Atualizar para {version}',
         'update_title': 'Glowback {version} está disponível',
         'update_text': 'Clique aqui para baixar.',
+        'ha_setup': 'Configurar',
+        'ha_connected': 'Conectado',
+        'ha_connecting': 'Conectando…',
+        'ha_error': 'Desconectado',
+        'ha_intro': 'O Glowback aparece no Home Assistant como uma luz que você controla pelos painéis, pelas automações e pelo Google Assistente. A conexão é feita por MQTT: instale o app Mosquitto broker no Home Assistant e entre aqui com um usuário do Home Assistant.',
+        'ha_guide': 'Guia passo a passo',
+        'ha_address': 'Endereço',
+        'ha_port': 'Porta',
+        'ha_user': 'Usuário',
+        'ha_password': 'Senha',
+        'ha_user_hint': 'Usuário do Home Assistant',
+        'ha_password_saved': 'Salva',
+        'ha_connect': 'Conectar',
+        'ha_cancel': 'Cancelar',
+        'ha_disconnect': 'Desconectar',
+        'ha_testing': 'Conectando ao Home Assistant…',
+        'ha_need_address': 'Informe o endereço do Home Assistant.',
+        'ha_err_address': 'Este endereço não foi encontrado na sua rede.',
+        'ha_err_broker': 'Nenhum broker MQTT responde neste endereço. O app Mosquitto broker está iniciado?',
+        'ha_err_login': 'Usuário ou senha incorretos.',
+        'ha_err_refused': 'O broker MQTT recusou a conexão.',
+        'ha_err_tls': 'A conexão segura falhou.',
+        'ha_err_other': 'A conexão falhou ({error}).',
+        'ha_done_title': 'Conectado ao Home Assistant',
+        'ha_done_text': 'O Glowback está em Configurações › Dispositivos e serviços › MQTT.',
     },
 }
 LANGS = tuple(STRINGS)
@@ -1992,16 +2142,20 @@ def load_settings():
         return {}
 
 
+_settings_lock = threading.Lock()  # the panel and Home Assistant can both change settings
+
+
 def save_settings(data):
     """Merge `data` into settings.json."""
-    try:
-        merged = load_settings()
-        merged.update(data)
-        os.makedirs(LOG_DIR, exist_ok=True)
-        with open(SETTINGS_PATH, "w", encoding="utf-8") as f:
-            json.dump(merged, f, indent=1)
-    except OSError:
-        pass
+    with _settings_lock:
+        try:
+            merged = load_settings()
+            merged.update(data)
+            os.makedirs(LOG_DIR, exist_ok=True)
+            with open(SETTINGS_PATH, "w", encoding="utf-8") as f:
+                json.dump(merged, f, indent=1)
+        except OSError:
+            pass
 
 
 def icon_pixels(size, paused=False):
@@ -2130,6 +2284,10 @@ def cmd_uninstall():
             os.remove(path)
         except FileNotFoundError:
             pass
+    try:
+        ha_forget_now()  # remove Glowback from Home Assistant before its settings go
+    except Exception as e:
+        log(f"Home Assistant: not removed ({e!r})")
     import shutil
     shutil.rmtree(LOG_DIR, ignore_errors=True)
     print("Glowback was stopped and removed from startup, the Start menu and %LOCALAPPDATA%\\Glowback.")
@@ -2308,6 +2466,7 @@ class MenuPainter:
              "sun": "", "person": "", "star": "", "doc": "", "close": "",
              "link": ""}
     ICONS.update(dismiss="", quit="", check="", warning="", clock="")
+    ICONS.update(home="")
 
     def __init__(self, scale, icon):
         self.k, self.icon = scale, icon
@@ -2584,6 +2743,7 @@ def dock_flyout(pt, w, h, gap, work, screen, bar):
 class Tray:
     """Notification-area icon: pause/resume, mode, brightness, start with Windows, quit."""
     WM_TRAY, WM_CLOSE_APP, WM_UPDATE, WM_CHECKED = 0x8001, 0x8002, 0x8003, 0x8004
+    WM_HA, WM_HA_INSTALL = 0x8005, 0x8006  # posted by the Home Assistant thread
 
     def __init__(self, state, stop, argv):
         self.state, self.stop, self.argv = state, stop, argv
@@ -2602,6 +2762,7 @@ class Tray:
         self.flyout, self.flyout_closed, self.autostart, self.fly_place = None, 0.0, False, None
         self.checking, self.check_result, self.check_time = False, None, 0.0  # "check for updates" button
         self.hover = self.hover_seg = None
+        self.ha, self.ha_dialog = None, None  # Home Assistant connection and its window
         self._fly_ref = WNDPROC(self._fly_proc)
         fc = WNDCLASSEXW()
         fc.cbSize, fc.lpfnWndProc, fc.hInstance, fc.lpszClassName = sizeof(fc), self._fly_ref, hinst, "GlowbackFlyout"
@@ -2658,8 +2819,21 @@ class Tray:
     def loop(self):
         msg = wt.MSG()
         while user32.GetMessageW(byref(msg), None, 0, 0) > 0:
+            dialog = self.ha_dialog
+            if dialog and dialog.hwnd and user32.IsDialogMessageW(dialog.hwnd, byref(msg)):  # Tab, Enter, Esc
+                continue
             user32.TranslateMessage(byref(msg))
             user32.DispatchMessageW(byref(msg))
+
+    def ha_window(self):
+        """The Home Assistant row of the panel: its connection window."""
+        if not self.ha_dialog:
+            self.ha_dialog = HomeAssistantDialog(self)
+        self.ha_dialog.open()
+
+    def ha_changed(self):
+        if self.ha:
+            self.ha.reconfigure()
 
     def _proc(self, hwnd, msg, wparam, lparam):
         if msg == self.WM_TRAY:
@@ -2683,6 +2857,15 @@ class Tray:
             elif self.check_result == "found":
                 self.balloon = "update"
                 self.refresh((tr("update_title", version=self.state.new_version), tr("update_text")))
+            return 0
+        if msg == self.WM_HA:  # Home Assistant changed a setting, or its connection status changed
+            self.refresh()
+            if self.flyout and self.painter:
+                user32.InvalidateRect(self.flyout, None, False)
+            return 0
+        if msg == self.WM_HA_INSTALL:  # "Install" on Glowback's update entity in Home Assistant
+            if getattr(self.state, "update_info", None):
+                self.start_update()
             return 0
         if msg == 0x002C and self.painter:  # WM_MEASUREITEM (menu)
             mis = MEASUREITEMSTRUCT.from_address(lparam)
@@ -2737,6 +2920,8 @@ class Tray:
         items += [dict(kind="sep"),
                   dict(kind="toggle", id=1, icon="light", text=tr("ambilight"), on=s.enabled),
                   dict(kind="toggle", id=20, icon="power", text=tr("start_windows"), on=self.autostart),
+                  dict(kind="action", id=27, icon="home", text="Home Assistant", status=Tray._ha_status(self),
+                       statuses=(tr("ha_setup"), tr("ha_connected"), tr("ha_connecting"), tr("ha_error"))),
                   dict(kind="sep"), dict(kind="label", text=tr("mode")),
                   dict(kind="radio", id=2, icon="monitor", text=tr("zones"), checked=s.mode == "zones"),
                   dict(kind="radio", id=3, icon="palette", text=tr("average"), checked=s.mode == "average"),
@@ -2755,6 +2940,18 @@ class Tray:
             if i == self.hover:
                 it["hover_seg"] = self.hover_seg
         return items
+
+    def _ha_status(self):
+        """Right side of the Home Assistant row: (text, colour, glyph)."""
+        ha = getattr(self, "ha", None)
+        status = ha.status if ha else "off"
+        if status == "connected":
+            return tr("ha_connected"), MenuPainter.GREEN, "check"
+        if status == "connecting":
+            return tr("ha_connecting"), MenuPainter.MUTED, None
+        if status == "error":
+            return tr("ha_error"), MenuPainter.AMBER, "warning"
+        return tr("ha_setup"), MenuPainter.MUTED, None
 
     def _check_status(self):
         """Result of the last "check for updates" click, kept 10 minutes: (text, colour, glyph) or None."""
@@ -2928,6 +3125,8 @@ class Tray:
                 os.startfile(AUTHOR_URL)
             elif cid == 25:
                 self.start_update()
+            elif cid == 27:
+                self.ha_window()
             elif cid == 99:
                 k32.SetEvent(self.stop.h)
             return
@@ -3097,7 +3296,10 @@ def run_with_tray(args, stop, state, argv):
         tray = Tray(state, stop, argv)
     except OSError as e:
         log(f"Tray icon unavailable ({e}), running without it.")
+        HomeAssistant(state, stop).start()
         return run(args, stop, state)
+    tray.ha = HomeAssistant(state, stop, notify=lambda: user32.PostMessageW(tray.hwnd, Tray.WM_HA, 0, 0),
+                            install=lambda: user32.PostMessageW(tray.hwnd, Tray.WM_HA_INSTALL, 0, 0)).start()
     worker_error = []
 
     def worker():
@@ -3124,6 +3326,797 @@ def run_with_tray(args, stop, state, argv):
         user32.DestroyIcon(icon)
     if worker_error:
         raise worker_error[0]
+
+
+# =============================================================================
+# Home Assistant (MQTT discovery), and through it Google Assistant and Alexa
+# =============================================================================
+HA_PREFIX = "homeassistant"  # Home Assistant's MQTT discovery prefix
+HA_EFFECTS = {"Zones": "zones", "Average": "average"}  # light effects <-> Glowback modes
+HA_PICTURE = "https://raw.githubusercontent.com/Ilyomix/glowback/main/docs/img/icon-192.png"
+
+
+class DATA_BLOB(ctypes.Structure):
+    _fields_ = [("cbData", wt.DWORD), ("pbData", ctypes.POINTER(ctypes.c_ubyte))]
+
+
+def _dpapi(data, protect):
+    """Encrypts (or decrypts) bytes for the current Windows user: how the MQTT password is kept in settings.json."""
+    crypt32 = ctypes.WinDLL("crypt32", use_last_error=True)
+    fn = crypt32.CryptProtectData if protect else crypt32.CryptUnprotectData
+    _sig(fn, wt.BOOL, ctypes.POINTER(DATA_BLOB), ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p,
+         wt.DWORD, ctypes.POINTER(DATA_BLOB))
+    _sig(k32.LocalFree, ctypes.c_void_p, ctypes.c_void_p)
+    buf = (ctypes.c_ubyte * max(1, len(data))).from_buffer_copy(data or b"\0")
+    blob, out = DATA_BLOB(len(data), ctypes.cast(buf, ctypes.POINTER(ctypes.c_ubyte))), DATA_BLOB()
+    if not fn(byref(blob), None, None, None, None, 0x1, byref(out)):  # CRYPTPROTECT_UI_FORBIDDEN
+        raise ctypes.WinError(ctypes.get_last_error())
+    try:
+        return ctypes.string_at(out.pbData, out.cbData)
+    finally:
+        k32.LocalFree(out.pbData)
+
+
+def machine_id():
+    """Short anonymous id of this PC (a hash of Windows' MachineGuid): MQTT topics and Home Assistant unique ids."""
+    import hashlib
+    import winreg
+    try:
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Cryptography", 0,
+                            winreg.KEY_READ | winreg.KEY_WOW64_64KEY) as key:
+            seed = winreg.QueryValueEx(key, "MachineGuid")[0]
+    except OSError:
+        seed = os.environ.get("COMPUTERNAME", "windows")
+    return hashlib.sha256(f"glowback:{seed}".encode()).hexdigest()[:10]
+
+
+def ha_settings():
+    """The saved Home Assistant connection: dict(host, port, user, password, tls), or None when it isn't set up."""
+    import base64
+    saved = load_settings().get("home_assistant")
+    if not isinstance(saved, dict) or not saved.get("host"):
+        return None
+    tls = bool(saved.get("tls"))
+    cfg = dict(host=str(saved["host"]), port=int(saved.get("port") or (8883 if tls else 1883)),
+               user=str(saved.get("user") or ""), password="", tls=tls)
+    if saved.get("password"):
+        try:
+            cfg["password"] = _dpapi(base64.b64decode(saved["password"]), False).decode("utf-8")
+        except (OSError, ValueError):  # saved by another Windows account
+            log("Home Assistant: the saved password can't be read here, enter it again")
+    return cfg
+
+
+def save_ha_settings(host, port, user, password, tls=False):
+    import base64
+    secret = base64.b64encode(_dpapi(password.encode("utf-8"), True)).decode("ascii") if password else ""
+    save_settings({"home_assistant": dict(host=host, port=port, user=user, password=secret, tls=tls)})
+
+
+class MqttRefused(OSError):
+    """The broker answered CONNECT with an error code (4: bad user name or password, 5: not authorized)."""
+
+    def __init__(self, code):
+        super().__init__(f"MQTT connection refused (code {code})")
+        self.code = code
+
+
+class Mqtt:
+    """Minimal MQTT 3.1.1 client (QoS 0, keep-alive, last will): all Home Assistant needs, without dependencies."""
+
+    def __init__(self, host, port, user="", password="", tls=False, client_id="glowback", will=None, keepalive=60):
+        self.host, self.port, self.user, self.password, self.tls = host, port, user, password, tls
+        self.client_id, self.will, self.keepalive = client_id, will, keepalive
+        self.sock, self.packet_id, self.last_out, self.ping_sent = None, 0, 0.0, None
+
+    @staticmethod
+    def _str(s):
+        b = s.encode("utf-8") if isinstance(s, str) else s
+        return struct.pack(">H", len(b)) + b
+
+    def _send(self, kind, body=b""):
+        n, size = len(body), b""
+        while True:  # "remaining length": 7 bits per byte
+            n, digit = n >> 7, n & 0x7F
+            size += bytes([digit | (0x80 if n else 0)])
+            if not n:
+                break
+        self.sock.sendall(bytes([kind]) + size + body)
+        self.last_out = time.monotonic()
+
+    def _recv(self, n):
+        data = b""
+        while len(data) < n:
+            chunk = self.sock.recv(n - len(data))
+            if not chunk:
+                raise ConnectionResetError("the MQTT broker closed the connection")
+            data += chunk
+        return data
+
+    def _read(self, timeout):
+        """Next packet as (first byte, body), or None if nothing arrives within `timeout` seconds."""
+        self.sock.settimeout(timeout)
+        try:
+            first = self.sock.recv(1)
+        except (socket.timeout, TimeoutError):
+            return None
+        if not first:
+            raise ConnectionResetError("the MQTT broker closed the connection")
+        self.sock.settimeout(10)
+        size, shift = 0, 0
+        while True:
+            byte = self._recv(1)[0]
+            size |= (byte & 0x7F) << shift
+            if not byte & 0x80:
+                break
+            shift += 7
+            if shift > 21:
+                raise ConnectionResetError("malformed MQTT packet")
+        return first[0], self._recv(size)
+
+    def connect(self, timeout=8):
+        sock = socket.create_connection((self.host, self.port), timeout=timeout)
+        if self.tls:
+            import ssl
+            sock = ssl.create_default_context().wrap_socket(sock, server_hostname=self.host)
+        self.sock = sock
+        flags, payload = 0x02, self._str(self.client_id)  # clean session
+        if self.will:
+            flags |= 0x04 | 0x20  # will message, retained
+            payload += self._str(self.will[0]) + self._str(self.will[1])
+        if self.user:
+            flags |= 0x80
+            payload += self._str(self.user)
+            if self.password:
+                flags |= 0x40
+                payload += self._str(self.password)
+        self._send(0x10, self._str("MQTT") + bytes([4, flags]) + struct.pack(">H", self.keepalive) + payload)
+        packet = self._read(timeout)
+        if not packet or packet[0] >> 4 != 2 or len(packet[1]) < 2:
+            raise ConnectionResetError("no MQTT answer")
+        if packet[1][1]:
+            raise MqttRefused(packet[1][1])
+
+    def publish(self, topic, payload, retain=False):
+        if isinstance(payload, dict):
+            payload = json.dumps(payload, separators=(",", ":"))
+        if isinstance(payload, str):
+            payload = payload.encode("utf-8")
+        self._send(0x30 | (1 if retain else 0), self._str(topic) + payload)
+
+    def subscribe(self, *topics):
+        self.packet_id = self.packet_id % 0xFFFF + 1
+        self._send(0x82, struct.pack(">H", self.packet_id) + b"".join(self._str(t) + b"\0" for t in topics))
+
+    def poll(self, timeout=0.5):
+        """Waits up to `timeout` s for a message: (topic, payload bytes) or None. Keeps the connection alive."""
+        now = time.monotonic()
+        if self.ping_sent and now - self.ping_sent > self.keepalive:
+            raise TimeoutError("the MQTT broker stopped answering")
+        if not self.ping_sent and now - self.last_out > self.keepalive / 2:
+            self._send(0xC0)  # PINGREQ
+            self.ping_sent = now
+        packet = self._read(timeout)
+        if not packet:
+            return None
+        kind, body = packet
+        if kind >> 4 == 13:  # PINGRESP
+            self.ping_sent = None
+        elif kind >> 4 == 3 and len(body) >= 2:  # PUBLISH
+            n = struct.unpack(">H", body[:2])[0]
+            topic, payload = body[2:2 + n].decode("utf-8", "replace"), body[2 + n:]
+            if (kind >> 1) & 3:  # QoS 1 or 2 (we subscribe with QoS 0, so only from odd brokers)
+                if (kind >> 1) & 3 == 1:
+                    self._send(0x40, payload[:2])  # PUBACK
+                payload = payload[2:]
+            return topic, payload
+        return None
+
+    def close(self):
+        if self.sock:
+            try:
+                self._send(0xE0)  # DISCONNECT: no last will
+            except OSError:
+                pass
+            try:
+                self.sock.close()
+            except OSError:
+                pass
+            self.sock = None
+
+
+def ha_check(cfg, timeout=6):
+    """Connects to the broker once with these settings: raises if it fails."""
+    client = Mqtt(cfg["host"], cfg["port"], cfg["user"], cfg["password"], cfg["tls"], f"glowback-{machine_id()}-check")
+    try:
+        client.connect(timeout)
+    finally:
+        client.close()
+
+
+def ha_error_text(e):
+    import ssl
+    if isinstance(e, MqttRefused):
+        return tr("ha_err_login") if e.code in (4, 5) else tr("ha_err_refused")
+    if isinstance(e, socket.gaierror):
+        return tr("ha_err_address")
+    if isinstance(e, ssl.SSLError):
+        return tr("ha_err_tls")
+    if isinstance(e, (ConnectionRefusedError, socket.timeout, TimeoutError, ConnectionResetError)):
+        return tr("ha_err_broker")
+    return tr("ha_err_other", error=str(e) or e.__class__.__name__)
+
+
+class HomeAssistant:
+    """Glowback as a device in Home Assistant, through MQTT discovery: a light (ambient light on/off, brightness,
+    mode as an effect), the number of LEDs and an update entity. Own thread; reconnects and follows the settings."""
+
+    def __init__(self, state, stop, notify=lambda: None, install=lambda: None):
+        self.state, self.stop, self.notify, self.install = state, stop, notify, install
+        self.status, self.error = "off", ""  # off, connecting, connected, error
+        self.wake = threading.Event()
+        self.node = machine_id()
+        self.base = f"glowback/{self.node}"
+        self._saved = None
+
+    def start(self):
+        threading.Thread(target=self._run, name="glowback-home-assistant", daemon=True).start()
+        return self
+
+    def reconfigure(self):
+        """The settings changed (panel window, --home-assistant): reconnect now."""
+        self.wake.set()
+
+    def _set_status(self, status, error=""):
+        if (status, error) != (self.status, self.error):
+            self.status, self.error = status, error
+            self.notify()
+
+    def _changed(self):
+        return json.dumps(load_settings().get("home_assistant"), sort_keys=True) != self._saved
+
+    def _sleep(self, seconds):
+        """Waits, but wakes up when Glowback quits or the Home Assistant settings change."""
+        end, next_look = time.monotonic() + seconds, time.monotonic() + 2
+        while time.monotonic() < end and not self.wake.is_set():
+            if self.stop.wait(0.25):
+                return
+            if time.monotonic() > next_look:
+                next_look = time.monotonic() + 2
+                if self._changed():
+                    return
+
+    def _run(self):
+        delay = 2
+        while not self.stop.wait(0):
+            self.wake.clear()
+            self._saved = json.dumps(load_settings().get("home_assistant"), sort_keys=True)
+            cfg = ha_settings()
+            if not cfg:
+                self._set_status("off")
+                self._sleep(3600)
+                continue
+            if self.status != "error":  # retries keep showing the last error until they succeed
+                self._set_status("connecting")
+            try:
+                self._session(cfg)
+                delay = 2
+            except (OSError, ValueError) as e:
+                if self.status != "error" or self.error != ha_error_text(e):
+                    log(f"Home Assistant: {cfg['host']}:{cfg['port']} {e.__class__.__name__}: {e}")
+                self._set_status("error", ha_error_text(e))
+            if not self.wake.is_set() and not self.stop.wait(0):
+                self._sleep(delay)
+                delay = min(delay * 2, 60)
+
+    def _session(self, cfg):
+        available = self.base + "/availability"
+        client = Mqtt(cfg["host"], cfg["port"], cfg["user"], cfg["password"], cfg["tls"], f"glowback-{self.node}",
+                      will=(available, "offline"))
+        client.connect()
+        try:
+            client.subscribe(self.base + "/set", self.base + "/update/install", HA_PREFIX + "/status")
+            self._announce(client)
+            self._set_status("connected")
+            log(f"Home Assistant: connected to {cfg['host']}:{cfg['port']}")
+            seen, next_look = None, time.monotonic() + 2
+            while not self.stop.wait(0) and not self.wake.is_set():
+                message = client.poll(0.5)
+                if message:
+                    self._handle(client, *message)
+                s = self.state
+                now = (s.version, s.leds, s.new_version)
+                if now != seen:  # changed in the panel, by a new device, or a new version is out
+                    seen = now
+                    self._publish_state(client)
+                if time.monotonic() > next_look:
+                    next_look = time.monotonic() + 2
+                    if self._changed():
+                        break
+            if not ha_settings():  # disconnected from the panel: remove Glowback from Home Assistant
+                self._forget(client)
+            else:
+                client.publish(available, "offline", retain=True)
+        finally:
+            client.close()
+
+    def _device(self):
+        return {"identifiers": [f"glowback_{self.node}"], "name": "Glowback", "manufacturer": AUTHOR,
+                "model": f"Glowback ({os.environ.get('COMPUTERNAME', 'Windows')})", "sw_version": __version__,
+                "configuration_url": REPO_URL}
+
+    def _configs(self):
+        """Discovery config of each entity, by component."""
+        common = dict(availability_topic=self.base + "/availability", device=self._device(),
+                      origin={"name": "Glowback", "sw_version": __version__, "support_url": REPO_URL})
+        return {
+            "light": dict(name=None, unique_id=f"glowback_{self.node}", icon="mdi:television-ambient-light",
+                          schema="json", command_topic=self.base + "/set", state_topic=self.base + "/state",
+                          brightness=True, brightness_scale=100, supported_color_modes=["brightness"],
+                          effect=True, effect_list=list(HA_EFFECTS), **common),
+            "sensor": dict(name="LEDs", unique_id=f"glowback_{self.node}_leds", icon="mdi:led-strip-variant",
+                           state_topic=self.base + "/state", value_template="{{ value_json.leds }}",
+                           state_class="measurement", entity_category="diagnostic", **common),
+            "update": dict(name=None, unique_id=f"glowback_{self.node}_update", state_topic=self.base + "/update",
+                           command_topic=self.base + "/update/install", payload_install="install",
+                           entity_picture=HA_PICTURE, **common),
+        }
+
+    def _announce(self, client):
+        for component, config in self._configs().items():
+            client.publish(f"{HA_PREFIX}/{component}/glowback_{self.node}/config", config, retain=True)
+        client.publish(self.base + "/availability", "online", retain=True)
+        self._publish_state(client)
+
+    def _forget(self, client):
+        for component in self._configs():
+            client.publish(f"{HA_PREFIX}/{component}/glowback_{self.node}/config", b"", retain=True)
+        for topic in ("/state", "/update", "/availability"):
+            client.publish(self.base + topic, b"", retain=True)
+        log("Home Assistant: Glowback removed")
+
+    def _publish_state(self, client):
+        s = self.state
+        client.publish(self.base + "/state", {"state": "ON" if s.enabled else "OFF", "brightness": round(s.brightness),
+                                              "effect": "Average" if s.mode == "average" else "Zones",
+                                              "color_mode": "brightness", "leds": s.leds}, retain=True)
+        client.publish(self.base + "/update", {"installed_version": __version__,
+                                               "latest_version": s.new_version or __version__, "title": "Glowback",
+                                               "release_url": REPO_URL + "/releases/latest"}, retain=True)
+
+    def _handle(self, client, topic, payload):
+        if topic == self.base + "/set":
+            try:
+                command = json.loads(payload or b"{}")
+            except ValueError:
+                return
+            change = {}
+            if command.get("state") in ("ON", "OFF"):
+                change["enabled"] = command["state"] == "ON"
+            if isinstance(command.get("brightness"), (int, float)):
+                change["brightness"] = max(1.0, min(100.0, float(command["brightness"])))
+            if command.get("effect") in HA_EFFECTS:
+                change["mode"] = HA_EFFECTS[command["effect"]]
+            if change:
+                log("Home Assistant: " + ", ".join(f"{k} {v}" for k, v in change.items()))
+                self.state.update(**change)
+                self.notify()
+            self._publish_state(client)
+        elif topic == self.base + "/update/install" and payload.strip() == b"install":
+            self.install()
+        elif topic == HA_PREFIX + "/status" and payload.strip() == b"online":  # Home Assistant restarted
+            self._announce(client)
+
+
+def ha_forget_now():
+    """Uninstall: remove Glowback from Home Assistant if it was connected (best effort, a few seconds at most)."""
+    cfg = ha_settings()
+    if not cfg:
+        return
+    ha = HomeAssistant(types_state(), None)
+    client = Mqtt(cfg["host"], cfg["port"], cfg["user"], cfg["password"], cfg["tls"], f"glowback-{ha.node}")
+    try:
+        client.connect(4)
+        ha._forget(client)
+    except OSError:
+        pass
+    finally:
+        client.close()
+
+
+def types_state():
+    """A stand-in State for code that only needs its attributes."""
+    import types
+    return types.SimpleNamespace(enabled=False, brightness=100, mode="zones", leds=0, new_version=None, version=0)
+
+
+def cmd_home_assistant(value):
+    """glowback --home-assistant mqtt://user:password@host[:port] (mqtts:// for TLS), or off."""
+    from urllib.parse import unquote, urlsplit
+    if value.strip().lower() in ("off", "none", "no"):
+        save_settings({"home_assistant": None})
+        print("Home Assistant: off. A running Glowback removes itself from Home Assistant within a few seconds.")
+        return
+    usage = "usage: glowback --home-assistant mqtt://USER:PASSWORD@HOST[:PORT]   (or off)"
+    url = urlsplit(value if "://" in value else "mqtt://" + value)
+    try:
+        port = url.port
+    except ValueError:  # not a number
+        sys.exit(usage)
+    if url.scheme not in ("mqtt", "mqtts") or not url.hostname:
+        sys.exit(usage)
+    tls = url.scheme == "mqtts"
+    cfg = dict(host=url.hostname, port=port or (8883 if tls else 1883), user=unquote(url.username or ""),
+               password=unquote(url.password or ""), tls=tls)
+    try:
+        ha_check(cfg)
+    except Exception as e:
+        sys.exit(f"Home Assistant: {ha_error_text(e)}")
+    save_ha_settings(cfg["host"], cfg["port"], cfg["user"], cfg["password"], tls)
+    print(f"Home Assistant: connected to {cfg['host']}:{cfg['port']} and saved. "
+          "Glowback appears in Settings > Devices & services > MQTT while it runs.")
+
+
+def ha_guide_url():
+    if _lang["code"] == "fr":
+        return REPO_URL + "/blob/main/README.fr.md#-home-assistant-et-google-assistant"
+    return REPO_URL + "#-home-assistant--google-assistant"
+
+
+_sig(user32.SendMessageW, LRESULT, HANDLE, wt.UINT, ctypes.c_size_t, ctypes.c_ssize_t)
+_sig(user32.GetWindowTextLengthW, ctypes.c_int, HANDLE)
+_sig(user32.GetWindowTextW, ctypes.c_int, HANDLE, wt.LPWSTR, ctypes.c_int)
+_sig(user32.SetWindowTextW, wt.BOOL, HANDLE, wt.LPCWSTR)
+_sig(user32.EnableWindow, wt.BOOL, HANDLE, wt.BOOL)
+_sig(user32.SetFocus, HANDLE, HANDLE)
+_sig(user32.GetFocus, HANDLE)
+_sig(user32.IsDialogMessageW, wt.BOOL, HANDLE, ctypes.POINTER(wt.MSG))
+_sig(user32.SetCursor, HANDLE, HANDLE)
+_sig(user32.ScreenToClient, wt.BOOL, HANDLE, ctypes.POINTER(wt.POINT))
+_sig(gdi32.SetBkColor, wt.DWORD, HANDLE, wt.DWORD)
+
+
+class HomeAssistantDialog:
+    """The window that connects Glowback to Home Assistant: broker address and port, user and password."""
+    WM_RESULT = 0x8010
+    FIELD, BORDER = 0x1B1C22, 0x2E3140
+    FIELDS = ("host", "port", "user", "password")
+    WIDTH = 452  # client width at 100 %
+
+    def __init__(self, tray):
+        self.tray, self.hwnd, self.painter = tray, None, None
+        self.edits, self.boxes, self.labels, self.buttons = {}, {}, [], {}
+        self.status, self.busy, self.result, self.pending = None, False, None, None
+        self._ref = WNDPROC(self._proc)
+        hinst = k32.GetModuleHandleW(None)
+        self.cls = f"GlowbackHomeAssistant{id(self)}"  # a class per object: each keeps its own window procedure
+        wc = WNDCLASSEXW()
+        wc.cbSize, wc.lpfnWndProc, wc.hInstance, wc.lpszClassName = sizeof(wc), self._ref, hinst, self.cls
+        wc.hCursor = user32.LoadCursorW(None, ctypes.c_void_p(32512))  # IDC_ARROW
+        icon = ensure_icons()[0]
+        wc.hIcon = user32.LoadImageW(None, icon, 1, 32, 32, 0x10)
+        wc.hIconSm = user32.LoadImageW(None, icon, 1, 16, 16, 0x10)
+        user32.RegisterClassExW(byref(wc))
+
+    # ---- layout and creation
+    def _layout(self, w):
+        """Positions of everything, in pixels; returns the client height."""
+        pt, p = self.painter, self.painter.px
+        pad, inner = p(26), w - 2 * p(26)
+        y = p(24)
+        self.head = (pad, y, w - pad, y + p(34))
+        y += p(34) + p(14)
+        rc = wt.RECT(0, 0, inner, 0)
+        gdi32.SelectObject(pt.mdc, pt.f_text)
+        user32.DrawTextW(pt.mdc, tr("ha_intro"), -1, byref(rc), 0x10 | 0x400 | 0x800)  # WORDBREAK|CALCRECT|NOPREFIX
+        self.intro = (pad, y, w - pad, y + rc.bottom)
+        y += rc.bottom + p(8)
+        self.link = (pad, y, pad + pt.text_width(tr("ha_guide"), pt.f_text) + p(18), y + p(22))
+        y += p(22) + p(20)
+        gap, port_w, half = p(12), p(96), (inner - p(12)) // 2
+        rows = ((("host", pad, inner - gap - port_w), ("port", w - pad - port_w, port_w)),
+                (("user", pad, half), ("password", w - pad - half, half)))
+        self.boxes, self.labels = {}, []
+        for row in rows:
+            for key, x, width in row:
+                self.labels.append((tr("ha_" + ("address" if key == "host" else key)), x, y))
+                self.boxes[key] = (x, y + p(22), x + width, y + p(22) + p(40))
+            y += p(22) + p(40) + p(16)
+        self.status_rc = (pad, y, w - pad, y + p(38))
+        y += p(38) + p(14)
+        self.button_y = (y, y + p(38))
+        return y + p(38) + p(24)
+
+    def open(self):
+        if self.hwnd and user32.IsWindow(self.hwnd):
+            user32.ShowWindow(self.hwnd, 9)  # SW_RESTORE
+            user32.SetForegroundWindow(self.hwnd)
+            return
+        pt_ = wt.POINT()
+        user32.GetCursorPos(byref(pt_))
+        mon = user32.MonitorFromPoint(pt_, 2)
+        dpi_x, dpi_y = wt.UINT(96), wt.UINT(96)
+        if shcore:
+            shcore.GetDpiForMonitor(mon, 0, byref(dpi_x), byref(dpi_y))
+        scale = dpi_x.value / 96.0
+        self.painter = MenuPainter(scale, None)
+        p = self.painter.px
+        mk = lambda px, weight, face: gdi32.CreateFontW(-round(px * scale), 0, 0, 0, weight, 0, 0, 0, 1, 0, 0, 5, 0, face)
+        self.f_head, self.f_glyph = mk(20, 600, ui_font_face()), mk(18, 400, icon_font_face())
+        self.f_button = mk(13.5, 600, ui_font_face())
+        self.field_brush = gdi32.CreateSolidBrush(_cref(self.FIELD))
+        w = p(self.WIDTH)
+        h = self._layout(w)
+        style = 0x00C00000 | 0x00080000 | 0x02000000  # CAPTION | SYSMENU | CLIPCHILDREN: a close button only
+        rc = wt.RECT(0, 0, w, h)
+        try:
+            user32.AdjustWindowRectExForDpi(byref(rc), style, False, 0, dpi_x.value)
+        except AttributeError:
+            user32.AdjustWindowRectEx(byref(rc), style, False, 0)
+        mi = MONITORINFOEXW()
+        mi.cbSize = sizeof(mi)
+        user32.GetMonitorInfoW(mon, byref(mi))
+        work, ww, wh = mi.rcWork, rc.right - rc.left, rc.bottom - rc.top
+        x, y = work.left + (work.right - work.left - ww) // 2, work.top + (work.bottom - work.top - wh) // 2
+        hinst = k32.GetModuleHandleW(None)
+        self.hwnd = user32.CreateWindowExW(0, self.cls, "Glowback · Home Assistant", style,
+                                           x, y, ww, wh, None, None, hinst, None)
+        if not self.hwnd:
+            self._free()
+            return
+        for attr, value in ((20, 1), (35, _cref(MenuPainter.BG)), (34, _cref(0x2C2E38))):  # dark, caption, border
+            v = wt.DWORD(value)
+            dwmapi.DwmSetWindowAttribute(self.hwnd, attr, byref(v), 4)
+        saved = ha_settings()
+        values = dict(host=("mqtts://" if saved and saved["tls"] else "") + (saved["host"] if saved else "homeassistant.local"),
+                      port=str(saved["port"]) if saved else "1883", user=saved["user"] if saved else "", password="")
+        for i, key in enumerate(self.FIELDS):
+            l, t, r, b = self.boxes[key]
+            eh = p(22)
+            style = 0x50010080 | (0x20 if key == "password" else 0) | (0x2000 if key == "port" else 0)
+            # WS_CHILD|VISIBLE|TABSTOP|ES_AUTOHSCROLL, ES_PASSWORD, ES_NUMBER
+            e = user32.CreateWindowExW(0, "EDIT", values[key], style, l + p(13), t + (b - t - eh) // 2, r - l - p(26),
+                                       eh, self.hwnd, ctypes.c_void_p(100 + i), hinst, None)
+            user32.SendMessageW(e, 0x0030, self.painter.f_text, 0)  # WM_SETFONT
+            self.edits[key] = e
+        cues = dict(user=tr("ha_user_hint"), password=tr("ha_password_saved") if saved and saved["password"] else "")
+        for key, cue in cues.items():
+            if cue:
+                text = ctypes.create_unicode_buffer(cue)  # EM_SETCUEBANNER copies it
+                user32.SendMessageW(self.edits[key], 0x1501, 1, ctypes.addressof(text))
+        user32.SendMessageW(self.edits["port"], 0x00C5, 5, 0)  # EM_LIMITTEXT
+        self.buttons = {}
+        top, bottom = self.button_y
+        right = w - p(26)
+        for cid, text in ((1, tr("ha_connect")), (2, tr("ha_cancel"))):
+            bw = max(p(104), self.painter.text_width(text, self.f_button) + p(44))
+            self.buttons[cid] = self._button(cid, text, right - bw, top, bw, bottom - top)
+            right -= bw + p(10)
+        if saved:
+            text = tr("ha_disconnect")
+            bw = self.painter.text_width(text, self.f_button) + p(28)
+            self.buttons[3] = self._button(3, text, p(26) - p(14), top, bw, bottom - top)
+        ha = getattr(self.tray, "ha", None)
+        if ha and ha.status == "connected":
+            self.status = (tr("ha_connected"), MenuPainter.GREEN)
+        elif ha and ha.status == "error" and saved:
+            self.status = (ha.error, MenuPainter.AMBER)
+        user32.ShowWindow(self.hwnd, 5)  # SW_SHOW
+        user32.SetForegroundWindow(self.hwnd)
+        user32.SetFocus(self.edits["user" if values["host"] and not values["user"] else "host"])
+
+    def _button(self, cid, text, x, y, w, h):
+        b = user32.CreateWindowExW(0, "BUTTON", text, 0x5001000B, x, y, w, h, self.hwnd, ctypes.c_void_p(cid),
+                                   k32.GetModuleHandleW(None), None)  # WS_CHILD|VISIBLE|TABSTOP|BS_OWNERDRAW
+        user32.SendMessageW(b, 0x0030, self.f_button, 0)
+        return b
+
+    def _free(self):
+        if self.painter:
+            self.painter.close()
+            self.painter = None
+        for h in (getattr(self, "f_head", None), getattr(self, "f_glyph", None), getattr(self, "f_button", None),
+                  getattr(self, "field_brush", None)):
+            if h:
+                gdi32.DeleteObject(h)
+        self.f_head = self.f_glyph = self.f_button = self.field_brush = None
+        self.edits, self.buttons = {}, {}
+
+    # ---- actions
+    def _get(self, key):
+        e = self.edits[key]
+        buf = ctypes.create_unicode_buffer(user32.GetWindowTextLengthW(e) + 1)
+        user32.GetWindowTextW(e, buf, len(buf))
+        return buf.value
+
+    def _show(self, text, color):
+        self.status = (text, color) if text else None
+        user32.InvalidateRect(self.hwnd, None, False)
+
+    def _enable(self, on):
+        for h in list(self.edits.values()) + list(self.buttons.values()):
+            user32.EnableWindow(h, on)
+
+    def connect(self):
+        host, tls = self._get("host").strip(), False
+        if "://" in host:
+            scheme, host = host.split("://", 1)
+            tls = scheme.lower() == "mqtts"
+        host = host.strip().strip("/")
+        port = self._get("port").strip()
+        port = int(port) if port.isdigit() and 0 < int(port) < 65536 else (8883 if tls else 1883)
+        user, password = self._get("user").strip(), self._get("password")
+        if not host:
+            self._show(tr("ha_need_address"), MenuPainter.AMBER)
+            user32.SetFocus(self.edits["host"])
+            return
+        saved = ha_settings()
+        if not password and saved and (saved["host"], saved["user"]) == (host, user):
+            password = saved["password"]  # left empty: keep the saved one
+        self.pending = dict(host=host, port=port, user=user, password=password, tls=tls)
+        self.busy, self.result = True, None
+        self._enable(False)
+        self._show(tr("ha_testing"), MenuPainter.MUTED)
+        hwnd, pending = self.hwnd, self.pending
+
+        def work():
+            try:
+                ha_check(pending)
+            except Exception as e:
+                self.result = ha_error_text(e)
+                log(f"Home Assistant: {pending['host']}:{pending['port']} {e.__class__.__name__}: {e}")
+            user32.PostMessageW(hwnd, self.WM_RESULT, 0, 0)
+
+        threading.Thread(target=work, name="glowback-ha-check", daemon=True).start()
+
+    def _checked(self):
+        self.busy = False
+        self._enable(True)
+        if self.result:
+            self._show(self.result, MenuPainter.AMBER)
+            return
+        c = self.pending
+        save_ha_settings(c["host"], c["port"], c["user"], c["password"], c["tls"])
+        self.tray.ha_changed()
+        user32.DestroyWindow(self.hwnd)
+        self.tray.refresh((tr("ha_done_title"), tr("ha_done_text")))
+
+    def disconnect(self):
+        save_settings({"home_assistant": None})
+        self.tray.ha_changed()
+        user32.DestroyWindow(self.hwnd)
+
+    # ---- drawing
+    def _paint(self, hwnd):
+        ps = PAINTSTRUCT()
+        hdc = user32.BeginPaint(hwnd, byref(ps))
+        rc = wt.RECT()
+        user32.GetClientRect(hwnd, byref(rc))
+        mem = gdi32.CreateCompatibleDC(hdc)
+        bmp = gdi32.CreateCompatibleBitmap(hdc, rc.right, rc.bottom)
+        old = gdi32.SelectObject(mem, bmp)
+        pt, p = self.painter, self.painter.px
+        user32.FillRect(mem, byref(rc), pt.bg_brush)
+        gdi32.SetBkMode(mem, 1)
+        l, t, r, b = self.head
+        tile = p(34)
+        shapes = [("round", 0x2A2448, l, t, tile, tile, p(9))]
+        focus = user32.GetFocus()
+        for key, (x0, y0, x1, y1) in self.boxes.items():
+            on = focus == self.edits.get(key)
+            edge = max(1.0, p(2) if on else p(1))
+            shapes += [("round", MenuPainter.ACCENT if on else self.BORDER, x0, y0, x1 - x0, y1 - y0, p(9)),
+                       ("round", self.FIELD, x0 + edge, y0 + edge, x1 - x0 - 2 * edge, y1 - y0 - 2 * edge, p(9) - edge)]
+        if self.status:
+            sx, sy = self.status_rc[0], self.status_rc[1]
+            shapes.append(("circle", self.status[1], sx, sy + p(6), p(8)))
+        pt._shapes(mem, shapes)
+        pt._text(mem, MenuPainter.ICONS["home"], self.f_glyph, MenuPainter.LABEL, l, t, l + tile, t + tile, 0x1)
+        pt._text(mem, "Home Assistant", self.f_head, MenuPainter.TEXT, l + tile + p(12), t, r, t + tile)
+        gdi32.SelectObject(mem, pt.f_text)
+        gdi32.SetTextColor(mem, _cref(MenuPainter.MUTED))
+        box = wt.RECT(*self.intro)
+        user32.DrawTextW(mem, tr("ha_intro"), -1, byref(box), 0x10 | 0x800)  # WORDBREAK | NOPREFIX
+        x0, y0, x1, y1 = self.link
+        pt._text(mem, tr("ha_guide"), pt.f_text, MenuPainter.LABEL, x0, y0, x1, y1)
+        gx = x0 + pt.text_width(tr("ha_guide"), pt.f_text) + p(5)
+        pt._text(mem, MenuPainter.ICONS["link"], pt.f_link, MenuPainter.LABEL, gx, y0 + p(1), x1 + p(10), y1)
+        for text, x, y in self.labels:
+            pt._text(mem, text.upper(), pt.f_label, MenuPainter.MUTED, x, y, x + p(300), y + p(18))
+        if self.status:
+            sx, sy, sr, sb = self.status_rc
+            gdi32.SelectObject(mem, pt.f_small)
+            gdi32.SetTextColor(mem, _cref(self.status[1] if self.status[1] != MenuPainter.MUTED else MenuPainter.ICON))
+            box = wt.RECT(sx + p(16), sy + p(1), sr, sb)
+            user32.DrawTextW(mem, self.status[0], -1, byref(box), 0x10 | 0x800)
+        gdi32.BitBlt(hdc, 0, 0, rc.right, rc.bottom, mem, 0, 0, 0x00CC0020)
+        gdi32.SelectObject(mem, old)
+        gdi32.DeleteObject(bmp)
+        gdi32.DeleteDC(mem)
+        user32.EndPaint(hwnd, byref(ps))
+
+    def _draw_button(self, dis):
+        pt, p = self.painter, self.painter.px
+        hdc, rc, cid = dis.hDC, dis.rcItem, dis.CtlID
+        l, t, r, b = rc.left, rc.top, rc.right, rc.bottom
+        user32.FillRect(hdc, byref(rc), pt.bg_brush)
+        pressed, disabled, focused = dis.itemState & 0x1, dis.itemState & 0x4, dis.itemState & 0x10
+        shapes = []
+        if cid == 1:  # Connect: the accent button
+            fill, color = (0x4B3F86, 0xB8B3D6) if disabled else (0x7558F0 if pressed else MenuPainter.ACCENT, 0xFFFFFF)
+            shapes.append(("round", fill, l, t, r - l, b - t, p(9)))
+        elif cid == 2:
+            fill, color = (0x2B2D38 if pressed else 0x23252E), (MenuPainter.MUTED if disabled else MenuPainter.TEXT)
+            if focused and not disabled:
+                shapes.append(("round", MenuPainter.RING, l, t, r - l, b - t, p(9)))
+                shapes.append(("round", fill, l + 1, t + 1, r - l - 2, b - t - 2, p(9) - 1))
+            else:
+                shapes.append(("round", fill, l, t, r - l, b - t, p(9)))
+        else:  # Disconnect: quiet, text only
+            color = MenuPainter.TEXT if pressed or focused else MenuPainter.MUTED
+            if pressed:
+                shapes.append(("round", 0x23252E, l, t, r - l, b - t, p(9)))
+        pt._shapes(hdc, shapes)
+        gdi32.SetBkMode(hdc, 1)
+        buf = ctypes.create_unicode_buffer(64)
+        user32.GetWindowTextW(dis.hwndItem, buf, 64)
+        pt._text(hdc, buf.value, self.f_button, color, l, t, r, b, 0x1)
+
+    def _over_link(self):
+        pt_ = wt.POINT()
+        user32.GetCursorPos(byref(pt_))
+        user32.ScreenToClient(self.hwnd, byref(pt_))
+        x0, y0, x1, y1 = self.link
+        return x0 <= pt_.x < x1 and y0 <= pt_.y < y1
+
+    def _proc(self, hwnd, msg, wparam, lparam):
+        try:
+            return self._on(hwnd, msg, wparam, lparam)
+        except Exception as e:  # never let a drawing error take the tray down
+            log(f"Home Assistant window: {e!r}")
+            return user32.DefWindowProcW(hwnd, msg, wparam, lparam)
+
+    def _on(self, hwnd, msg, wparam, lparam):
+        if msg == 0x000F and self.painter:  # WM_PAINT
+            self._paint(hwnd)
+            return 0
+        if msg == 0x0014:  # WM_ERASEBKGND
+            return 1
+        if msg in (0x0133, 0x0138) and self.painter:  # WM_CTLCOLOREDIT, WM_CTLCOLORSTATIC: the fields' colours
+            gdi32.SetTextColor(wparam, _cref(MenuPainter.TEXT))
+            gdi32.SetBkColor(wparam, _cref(self.FIELD))
+            return self.field_brush
+        if msg == 0x002B and self.painter:  # WM_DRAWITEM: buttons
+            self._draw_button(DRAWITEMSTRUCT.from_address(lparam))
+            return 1
+        if msg == 0x0111:  # WM_COMMAND
+            cid, code = wparam & 0xFFFF, (wparam >> 16) & 0xFFFF
+            if code in (0x0100, 0x0200):  # EN_SETFOCUS, EN_KILLFOCUS: the focused field gets the accent border
+                user32.InvalidateRect(hwnd, None, False)
+            elif cid == 1 and not self.busy:  # Connect, or Enter
+                self.connect()
+            elif cid == 2:  # Cancel, or Esc
+                user32.DestroyWindow(hwnd)
+            elif cid == 3 and not self.busy:
+                self.disconnect()
+            return 0
+        if msg == 0x0020 and (lparam & 0xFFFF) == 1 and self._over_link():  # WM_SETCURSOR over the guide link
+            user32.SetCursor(user32.LoadCursorW(None, ctypes.c_void_p(32649)))  # IDC_HAND
+            return 1
+        if msg == 0x0202 and self._over_link():  # WM_LBUTTONUP
+            os.startfile(ha_guide_url())
+            return 0
+        if msg == self.WM_RESULT:
+            self._checked()
+            return 0
+        if msg == 0x0010:  # WM_CLOSE
+            user32.DestroyWindow(hwnd)
+            return 0
+        if msg == 0x0002:  # WM_DESTROY
+            self.hwnd = None
+            self._free()
+            return 0
+        return user32.DefWindowProcW(hwnd, msg, wparam, lparam)
 
 
 # =============================================================================
@@ -3156,6 +4149,8 @@ def parse_args(argv=None):
     p.add_argument("--flip", action="store_true", help="swap top/bottom")
     p.add_argument("--openrgb", nargs="?", const="127.0.0.1:6742", default="auto", metavar="HOST:PORT|off",
                    help="OpenRGB SDK server whose devices are driven too (default: auto-detect on this PC; off to disable)")
+    p.add_argument("--home-assistant", metavar="mqtt://USER:PASSWORD@HOST[:PORT]|off",
+                   help="show Glowback in Home Assistant through its MQTT broker (saved; off to remove it)")
     p.add_argument("--strip-start", default="bottom-left",
                    choices=["bottom-left", "bottom-center", "bottom-right", "top-left", "top-right"],
                    help="OpenRGB LED strips: where the first LED is (strip runs around the screen)")
@@ -3211,6 +4206,9 @@ def main(argv=None):
     keep = _passthrough(raw)
     if args.stop:
         request_stop()
+        return
+    if args.home_assistant:
+        cmd_home_assistant(args.home_assistant)
         return
     if args.diy_layout:
         cmd_diy_layout(args.diy_layout)
@@ -3283,6 +4281,7 @@ def main(argv=None):
             log(f"Glowback {__version__} - mode {args.mode}, {args.fps:g} fps. Ctrl+C or 'glowback --stop' to quit.")
             state = State(args, enabled)
             if args.no_tray:
+                HomeAssistant(state, stop).start()
                 run(args, stop, state)
             else:
                 run_with_tray(args, stop, state, keep)

@@ -34,6 +34,7 @@ Glowback ist an keine Marke gebunden: Es steuert jedes Gerät, das die **dynamis
 - 💡 **Helle, natürliche Farben**, auch in dunklen Szenen.
 - 🪟 **Eine echte Windows-App**: Installer, Startmenü, Autostart, dunkles Menü neben der Uhr mit Live-Status, Deinstallation über *Einstellungen → Apps*.
 - 🔄 **Update-Hinweise** einmal am Tag (abschaltbar).
+- 🏠 **Home Assistant und Google Assistant**: Glowback erscheint als Licht, steuerbar über Dashboards, Automationen oder per Sprache.
 - 🌍 **6 Sprachen**, passend zur Windows-Sprache.
 - 🔌 **Plug and play**: findet Geräte mit dynamischer Beleuchtung und OpenRGB automatisch.
 - 🪶 **Leichtgewichtig**: etwa 0,5 ms CPU pro Bild.
@@ -60,7 +61,11 @@ Getestet mit: AOC AGON PRO AG276QZD2 (47 LEDs). Läuft es auf deinem Monitor? [S
 
 ## 🪟 Menü des Symbols
 
-Rechtsklick auf das Glowback-Symbol neben der Uhr: **Status** (aktiv mit Anzahl der LEDs, pausiert, Suche), **Umgebungslicht** (pausieren/fortsetzen), **Mit Windows starten**, **Nach Updates suchen**, **Modus**, **Helligkeit**, **Erstellt von Ilyomix**, **Auf GitHub einen Stern geben**, **Protokoll öffnen**, **Beenden**.
+Rechtsklick auf das Glowback-Symbol neben der Uhr: **Status** (aktiv mit Anzahl der LEDs, pausiert, Suche), **Umgebungslicht** (pausieren/fortsetzen), **Mit Windows starten**, **Home Assistant**, **Nach Updates suchen**, **Modus**, **Helligkeit**, **Erstellt von Ilyomix**, **Auf GitHub einen Stern geben**, **Protokoll öffnen**, **Beenden**.
+
+## 🏠 Home Assistant und Google Assistant
+
+Glowback kann in Home Assistant als Licht erscheinen (an/aus, Helligkeit und Modus), steuerbar über Dashboards, Automationen, Google Assistant und Alexa. Installiere in Home Assistant die App **Mosquitto broker**, klicke dann im Glowback-Panel auf **Home Assistant** und gib Adresse, Benutzer und Passwort ein. [Ausführliche Anleitung (Englisch)](README.md#-home-assistant--google-assistant).
 
 ## 🗑️ Deinstallieren
 

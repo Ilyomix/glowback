@@ -44,6 +44,7 @@ Glowback n'est lié à aucune marque. Il pilote tout appareil que l'**Éclairage
 - 💡 **Couleurs lumineuses et fidèles** : une courbe de luminosité qui conserve la teinte garde la lueur visible dans les scènes sombres.
 - 🪟 **Une vraie application Windows** : installateur, menu Démarrer, lancement au démarrage, menu sombre près de l'horloge avec l'état en direct, désinstallation propre depuis *Paramètres → Applications*.
 - 🔄 **Mises à jour signalées** : Glowback vérifie GitHub une fois par jour et vous prévient quand une nouvelle version sort. Un interrupteur permet de le désactiver.
+- 🏠 **Home Assistant et Google Assistant** : Glowback apparaît comme une lumière à piloter depuis vos tableaux de bord, vos automatisations ou à la voix.
 - 🌍 **6 langues** : français, anglais, espagnol, allemand, italien, portugais, selon la langue de Windows.
 - 🔌 **Plug and play** : détecte automatiquement les appareils Éclairage dynamique et OpenRGB, et lit la position physique de chaque LED.
 - 🖥️ **Multi-écran** : chaque appareil LED suit son propre écran (reconnu par son nom EDID).
@@ -92,11 +93,48 @@ Clic droit (ou gauche) sur l'icône Glowback près de l'horloge :
 - **État** : actif avec le nombre de LED, en pause, ou en recherche de LED
 - **Lumière d'ambiance** : pause ou reprise. En pause, les LED reprennent l'effet de l'appareil
 - Interrupteurs **Lancer au démarrage** et **Vérifier les mises à jour**
+- **Home Assistant** : état de la connexion, cliquez pour le connecter
 - **Mode** : chaque LED suit sa zone, ou une seule couleur moyenne
 - **Luminosité** : 100 / 75 / 50 / 25 %
 - **Créé par Ilyomix**, **Mettre une étoile sur GitHub**, **Ouvrir le journal**, **Quitter**
 
 Les réglages sont mémorisés. Des outils supplémentaires sont dans le menu Démarrer : *Tester les LED* et *Calibrer la balance des blancs*.
+
+## 🏠 Home Assistant et Google Assistant
+
+Glowback peut apparaître dans [Home Assistant](https://www.home-assistant.io) comme une lumière : pilotez la lumière d'ambiance depuis vos tableaux de bord et vos automatisations, ou à la voix avec Google Assistant et Alexa.
+
+1. **Dans Home Assistant** : installez l'application **Mosquitto broker** (*Paramètres → Applications*) et démarrez-la. Home Assistant propose ensuite l'intégration **MQTT** dans *Paramètres → Appareils et services* : ajoutez-la.
+2. **Un utilisateur pour Glowback** (conseillé) : *Paramètres → Personnes → Utilisateurs → Ajouter un utilisateur*, par exemple `glowback`. Si *Utilisateurs* n'apparaît pas, activez le *Mode avancé* dans votre profil.
+3. **Dans Glowback** : ouvrez le panneau, cliquez sur **Home Assistant**, saisissez l'adresse (`homeassistant.local` marche en général, sinon l'IP de Home Assistant), l'utilisateur et son mot de passe, puis **Connecter**.
+
+Glowback apparaît alors dans *Paramètres → Appareils et services → MQTT* :
+
+| Entité | Rôle |
+|---|---|
+| `light.glowback` | Allumé/éteint = lumière d'ambiance, luminosité, et le mode en effet (*Zones* ou *Average*) |
+| `sensor.glowback_leds` | Nombre de LED pilotées par Glowback |
+| `update.glowback` | Signale une nouvelle version, et l'installe |
+
+Elle passe en *indisponible* quand le PC est éteint ou Glowback fermé. Le mot de passe est chiffré pour votre compte Windows et n'est envoyé qu'à votre broker.
+
+**Google Assistant** : avec [Home Assistant Cloud](https://www.nabucasa.com), ouvrez *Paramètres → Assistants vocaux → Exposer* et exposez **Glowback**, puis dites *« Ok Google, éteins Glowback »* ou *« Ok Google, mets Glowback à 50 % »*. Sans abonnement, suivez la [configuration manuelle de Google Assistant](https://www.home-assistant.io/integrations/google_assistant/) de Home Assistant. Alexa fonctionne de la même façon.
+
+Exemple d'automatisation, lumière d'ambiance coupée à minuit :
+
+```yaml
+automation:
+  - alias: Glowback éteint la nuit
+    triggers:
+      - trigger: time
+        at: "00:00:00"
+    actions:
+      - action: light.turn_off
+        target:
+          entity_id: light.glowback
+```
+
+En ligne de commande : `glowback --home-assistant mqtt://glowback:MOTDEPASSE@homeassistant.local` (`mqtts://` pour TLS sur le port 8883, `off` pour retirer Glowback de Home Assistant).
 
 ## 🗑️ Désinstaller
 
@@ -123,6 +161,7 @@ Pour le couper un moment, utilisez l'interrupteur **Lumière d'ambiance** du men
 | `--screen` | `auto` | `auto`, `primary`, un numéro de `--list` ou un nom |
 | `--device` | appareils d'ambiance | Partie du nom ou `VID:PID`, ou `all` pour inclure claviers et souris |
 | `--openrgb [HÔTE:PORT\|off]` | `auto` | Serveur SDK OpenRGB à utiliser (détecté automatiquement sur ce PC) |
+| `--home-assistant mqtt://UTILISATEUR:MOTDEPASSE@HÔTE\|off` | | Affiche Glowback dans [Home Assistant](#-home-assistant-et-google-assistant) (mémorisé) |
 | `--strip-start` / `--strip-ccw` | `bottom-left` | Début et sens des rubans LED OpenRGB |
 | `--mirror` / `--flip` | non | Inverse gauche/droite ou haut/bas |
 | `--calibrate` · `--white-balance R,G,B` | | Balance des blancs par appareil (interactive) ou multiplicateurs fixes |
@@ -169,6 +208,7 @@ Utilisez *Tester les LED* dans le menu Démarrer (ou `glowback --test`). Si gauc
 - [x] Capture DXGI, HDR, détection des bandes noires
 - [x] Sortie OpenRGB (détectée automatiquement), guide DIY RP2040, balance des blancs
 - [x] 6 langues
+- [x] Home Assistant, et par lui Google Assistant et Alexa
 - [ ] Installateur signé et `winget install Glowback`
 - [ ] Écrans en mode portrait dans la capture DXGI
 - [ ] Firmware RP2040 précompilé (.uf2)
