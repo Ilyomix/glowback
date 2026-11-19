@@ -32,7 +32,7 @@ import time
 from ctypes import byref, sizeof
 from operator import itemgetter, mul
 
-__version__ = "0.3.2"
+__version__ = "0.3.3"
 
 if sys.platform != "win32":
     sys.exit("Glowback runs on Windows 10/11 (it drives HID LampArray / Dynamic Lighting devices).")
@@ -1699,6 +1699,9 @@ STRINGS = {
         'state_none': 'Looking for LEDs…',
         'about': 'About',
         'updates': 'Check for updates',
+        'auto_check': 'Check automatically',
+        'up_to_date': 'Up to date',
+        'check_failed': 'Failed',
         'update_to': 'Update to {version}',
         'update_title': 'Glowback {version} is available',
         'update_text': 'Click here to download it.',
@@ -1744,7 +1747,10 @@ STRINGS = {
         'state_paused': 'En pause',
         'state_none': 'Recherche des LED…',
         'about': 'À propos',
-        'updates': 'Vérifier les mises à jour',
+        'updates': 'Rechercher des mises à jour',
+        'auto_check': 'Vérifier automatiquement',
+        'up_to_date': 'À jour',
+        'check_failed': 'Échec',
         'update_to': 'Mettre à jour vers la {version}',
         'update_title': 'Glowback {version} est disponible',
         'update_text': 'Cliquez ici pour le télécharger.',
@@ -1791,6 +1797,9 @@ STRINGS = {
         'state_none': 'Buscando LED…',
         'about': 'Acerca de',
         'updates': 'Buscar actualizaciones',
+        'auto_check': 'Buscar automáticamente',
+        'up_to_date': 'Actualizado',
+        'check_failed': 'Error',
         'update_to': 'Actualizar a {version}',
         'update_title': 'Glowback {version} está disponible',
         'update_text': 'Haz clic aquí para descargarlo.',
@@ -1837,6 +1846,9 @@ STRINGS = {
         'state_none': 'Suche nach LEDs …',
         'about': 'Info',
         'updates': 'Nach Updates suchen',
+        'auto_check': 'Automatisch suchen',
+        'up_to_date': 'Aktuell',
+        'check_failed': 'Fehler',
         'update_to': 'Auf {version} aktualisieren',
         'update_title': 'Glowback {version} ist verfügbar',
         'update_text': 'Zum Herunterladen hier klicken.',
@@ -1883,6 +1895,9 @@ STRINGS = {
         'state_none': 'Ricerca dei LED…',
         'about': 'Informazioni',
         'updates': 'Controlla aggiornamenti',
+        'auto_check': 'Controlla automaticamente',
+        'up_to_date': 'Aggiornato',
+        'check_failed': 'Errore',
         'update_to': 'Aggiorna alla {version}',
         'update_title': 'Glowback {version} è disponibile',
         'update_text': 'Fai clic qui per scaricarlo.',
@@ -1929,6 +1944,9 @@ STRINGS = {
         'state_none': 'Procurando LEDs…',
         'about': 'Sobre',
         'updates': 'Verificar atualizações',
+        'auto_check': 'Verificar automaticamente',
+        'up_to_date': 'Atualizado',
+        'check_failed': 'Falhou',
         'update_to': 'Atualizar para {version}',
         'update_title': 'Glowback {version} está disponível',
         'update_text': 'Clique aqui para baixar.',
@@ -2231,6 +2249,11 @@ _sig(gdiplus.GdipAddPathArc, ctypes.c_int, VP, F, F, F, F, F, F)
 _sig(gdiplus.GdipClosePathFigure, ctypes.c_int, VP)
 _sig(gdiplus.GdipFillPath, ctypes.c_int, VP, VP, VP)
 _sig(gdiplus.GdipDeletePath, ctypes.c_int, VP)
+_sig(gdiplus.GdipCreatePen1, ctypes.c_int, ctypes.c_uint32, F, ctypes.c_int, PVP)
+_sig(gdiplus.GdipSetPenStartCap, ctypes.c_int, VP, ctypes.c_int)
+_sig(gdiplus.GdipSetPenEndCap, ctypes.c_int, VP, ctypes.c_int)
+_sig(gdiplus.GdipDrawArc, ctypes.c_int, VP, VP, F, F, F, F, F, F)
+_sig(gdiplus.GdipDeletePen, ctypes.c_int, VP)
 try:
     _sig(user32.GetDpiForWindow, wt.UINT, HANDLE)
 except AttributeError:
@@ -2284,6 +2307,7 @@ class MenuPainter:
     ICONS = {"light": "", "power": "", "sync": "", "monitor": "", "palette": "",
              "sun": "", "person": "", "star": "", "doc": "", "close": "",
              "link": ""}
+    ICONS.update(dismiss="", quit="", check="", warning="", clock="")
 
     def __init__(self, scale, icon):
         self.k, self.icon = scale, icon
@@ -2292,6 +2316,7 @@ class MenuPainter:
         self.f_text, self.f_title, self.f_small, self.f_label = mk(13.5, 400), mk(15, 600), mk(12, 400), mk(11, 600)
         self.f_icon, self.f_link = mk(16, 400, icon_font_face()), mk(12, 400, icon_font_face())
         self.f_chev = mk(17, 400)
+        self.f_close = mk(10, 400, icon_font_face())
         self.bg_brush = gdi32.CreateSolidBrush(_cref(self.BG))
         self.line_brush = gdi32.CreateSolidBrush(_cref(self.LINE))
         self.mdc = gdi32.CreateCompatibleDC(None)  # for measuring text
@@ -2300,7 +2325,7 @@ class MenuPainter:
 
     def close(self):
         for h in (self.f_text, self.f_title, self.f_small, self.f_label, self.f_icon, self.f_link, self.f_chev,
-                  self.bg_brush, self.line_brush):
+                  self.f_close, self.bg_brush, self.line_brush):
             gdi32.DeleteObject(h)
         gdi32.DeleteDC(self.mdc)
 
@@ -2318,9 +2343,9 @@ class MenuPainter:
         mis.itemHeight = p(self.HEIGHTS.get(kind, 34))
         if kind == "sep":
             w = 0
-        elif kind == "header":
-            w = p(16 + 28 + 12 + 16) + max(self.text_width("Glowback", self.f_title) + p(70),
-                                             self.text_width(it["status"], self.f_small) + p(16))
+        elif kind == "header":  # icon, name + version over the status, close button
+            title = self.text_width("Glowback", self.f_title) + p(7) + self.text_width(f"v{__version__}", self.f_small)
+            w = p(56) + max(title, p(14) + self.text_width(it["status"], self.f_small)) + p(16 + 32 + 8)
         elif kind == "label":
             w = p(18 + 16) + self.text_width(it["text"].upper(), self.f_label)
         else:
@@ -2339,7 +2364,15 @@ class MenuPainter:
             return p(16 + 16 + 12) + self.text_width(it.get("value", ""), self.f_small)
         if kind == "segments":
             return p(16 + 12) + len(it["values"]) * p(44) + (len(it["values"]) - 1) * p(3)
+        if it.get("statuses"):  # room for the loader, or the widest result with its glyph
+            return p(16 + 12) + max([p(16)] + [p(17) + self.text_width(t, self.f_small) for t in it["statuses"]])
         return p(16 + 14 + 12) if it.get("link") else p(16)
+
+    def close_rect(self, l, t, r, b):
+        """The close button, on the right of the header."""
+        size = self.px(32)
+        x1, y0 = r - self.px(8), t + (b - t - size) // 2
+        return x1 - size, y0, x1, y0 + size
 
     def segment_rects(self, it, l, t, r, b):
         """(x0, y0, x1, y1) of each choice of a "segments" item, right-aligned in the row."""
@@ -2372,6 +2405,15 @@ class MenuPainter:
         gdiplus.GdipSetSmoothingMode(g, 4)
         gdiplus.GdipSetPixelOffsetMode(g, 4)
         for shape in shapes:
+            if shape[0] == "arc":  # ("arc", color, x, y, d, start, sweep, width): the update loader
+                _, color, x, y, d, start, sweep, width = shape
+                pen = VP()
+                gdiplus.GdipCreatePen1(0xFF000000 | color, width, 2, byref(pen))  # UnitPixel
+                gdiplus.GdipSetPenStartCap(pen, 2)  # LineCapRound
+                gdiplus.GdipSetPenEndCap(pen, 2)
+                gdiplus.GdipDrawArc(g, pen, x, y, d, d, start, sweep)
+                gdiplus.GdipDeletePen(pen)
+                continue
             brush = VP()
             gdiplus.GdipCreateSolidFill(0xFF000000 | shape[1], byref(brush))
             if shape[0] == "circle":
@@ -2411,6 +2453,15 @@ class MenuPainter:
             d = p(8)
             color = {"on": self.GREEN, "off": self.OFF + 0x202020, "none": self.AMBER}[it["state"]]
             shapes.append(("circle", color, l + p(56), t + h * 0.68 - d / 2, d))
+            if it.get("hover_seg") == "close":
+                x0, y0, x1, y1 = self.close_rect(l, t, r, b)
+                shapes.append(("round", self.HOVER, x0, y0, x1 - x0, y1 - y0, p(6)))
+        elif kind == "action" and it.get("busy"):  # loader: an accent arc running around a faint ring
+            d, width = p(14), max(1.5, self.k * 1.8)
+            x_, y_, now = r - p(16) - d, t + (h - d) / 2, time.monotonic()
+            sweep = 40 + 230 * (0.5 - 0.5 * math.cos(now * 2 * math.pi / 1.6))
+            shapes += [("arc", self.LINE, x_, y_, d, 0, 360, width),
+                       ("arc", self.ACCENT, x_, y_, d, (now * 320) % 360, sweep, width)]
         elif kind == "toggle":
             w_, h_ = p(34), p(19)
             x_, y_ = r - p(16) - w_, t + (h - h_) / 2
@@ -2440,10 +2491,13 @@ class MenuPainter:
         if kind == "header":
             size = p(28)
             user32.DrawIconEx(hdc, l + p(16), t + (h - size) // 2, self.icon, size, size, 0, None, 3)
-            x = l + p(56)
-            self._text(hdc, "Glowback", self.f_title, self.TEXT, x, t + p(8), r - p(16), t + h * 0.46)
-            self._text(hdc, f"v{__version__}", self.f_small, self.MUTED, x, t + p(8), r - p(16), t + h * 0.46, 0x2)
-            self._text(hdc, it["status"], self.f_small, self.MUTED, x + p(14), t + h * 0.46, r - p(16), b - p(6))
+            x, (cx0, cy0, cx1, cy1) = l + p(56), self.close_rect(l, t, r, b)
+            self._text(hdc, "Glowback", self.f_title, self.TEXT, x, t + p(8), cx0, t + h * 0.46)
+            vx = x + self.text_width("Glowback", self.f_title) + p(7)
+            self._text(hdc, f"v{__version__}", self.f_small, self.MUTED, vx, t + p(9), cx0, t + h * 0.46 + p(1))
+            self._text(hdc, it["status"], self.f_small, self.MUTED, x + p(14), t + h * 0.46, cx0, b - p(6))
+            self._text(hdc, self.ICONS["dismiss"], self.f_close, self.TEXT if it.get("hover_seg") == "close" else self.ICON,
+                       cx0, cy0, cx1, cy1, 0x1)
         elif kind == "label":
             self._text(hdc, it["text"].upper(), self.f_label, self.LABEL, l + p(18), t + p(8), r, b)
         elif kind != "sep":
@@ -2461,6 +2515,12 @@ class MenuPainter:
                 gdi32.ExcludeClipRect(hdc, r - p(28), t, r, b)  # hide the system's own submenu arrow
             elif kind == "action" and it.get("link"):
                 self._text(hdc, self.ICONS["link"], self.f_link, self.MUTED, l, t, right, b, 0x2)
+            elif kind == "action" and it.get("status") and not it.get("busy"):
+                text, color, glyph = it["status"]
+                self._text(hdc, text, self.f_small, color, l, t, right, b, 0x2)
+                if glyph:
+                    gx = right - self.text_width(text, self.f_small) - p(5)
+                    self._text(hdc, self.ICONS[glyph], self.f_link, color, l, t, gx, b, 0x2)
             elif kind == "segments":
                 for i, (x0, y0, x1, y1) in enumerate(self.segment_rects(it, l, t, r, b)):
                     on = it["values"][i] == it["value"]
@@ -2483,6 +2543,9 @@ _sig(user32.ShowWindow, wt.BOOL, HANDLE, ctypes.c_int)
 _sig(user32.IsWindow, wt.BOOL, HANDLE)
 _sig(user32.TrackMouseEvent, wt.BOOL, ctypes.POINTER(TRACKMOUSEEVENT))
 _sig(user32.MonitorFromPoint, HANDLE, wt.POINT, wt.DWORD)
+_sig(user32.SetTimer, ctypes.c_size_t, HANDLE, ctypes.c_size_t, wt.UINT, ctypes.c_void_p)
+_sig(user32.KillTimer, wt.BOOL, HANDLE, ctypes.c_size_t)
+_sig(user32.SetWindowPos, wt.BOOL, HANDLE, HANDLE, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, wt.UINT)
 _sig(gdi32.CreateCompatibleBitmap, HANDLE, HANDLE, ctypes.c_int, ctypes.c_int)
 _sig(gdi32.BitBlt, wt.BOOL, HANDLE, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, HANDLE, ctypes.c_int,
      ctypes.c_int, wt.DWORD)
@@ -2520,7 +2583,7 @@ def dock_flyout(pt, w, h, gap, work, screen, bar):
 
 class Tray:
     """Notification-area icon: pause/resume, mode, brightness, start with Windows, quit."""
-    WM_TRAY, WM_CLOSE_APP, WM_UPDATE = 0x8001, 0x8002, 0x8003
+    WM_TRAY, WM_CLOSE_APP, WM_UPDATE, WM_CHECKED = 0x8001, 0x8002, 0x8003, 0x8004
 
     def __init__(self, state, stop, argv):
         self.state, self.stop, self.argv = state, stop, argv
@@ -2536,7 +2599,8 @@ class Tray:
         wc = WNDCLASSEXW()
         wc.cbSize, wc.lpfnWndProc, wc.hInstance, wc.lpszClassName = sizeof(wc), self._proc_ref, hinst, "GlowbackTray"
         user32.RegisterClassExW(byref(wc))
-        self.flyout, self.flyout_closed, self.autostart = None, 0.0, False
+        self.flyout, self.flyout_closed, self.autostart, self.fly_place = None, 0.0, False, None
+        self.checking, self.check_result, self.check_time = False, None, 0.0  # "check for updates" button
         self.hover = self.hover_seg = None
         self._fly_ref = WNDPROC(self._fly_proc)
         fc = WNDCLASSEXW()
@@ -2608,6 +2672,17 @@ class Tray:
         if msg == self.WM_UPDATE:  # posted by the update checker thread
             self.balloon = "update"
             self.refresh((tr("update_title", version=self.state.new_version), tr("update_text")))
+            if self.flyout and self.painter:
+                self._fit_flyout()
+            return 0
+        if msg == self.WM_CHECKED:  # posted by check_now() once GitHub answered
+            self.checking, self.check_time = False, time.monotonic()
+            if self.flyout and self.painter:
+                user32.KillTimer(self.flyout, 1)
+                self._fit_flyout()  # a new version adds the "Update to" row
+            elif self.check_result == "found":
+                self.balloon = "update"
+                self.refresh((tr("update_title", version=self.state.new_version), tr("update_text")))
             return 0
         if msg == 0x002C and self.painter:  # WM_MEASUREITEM (menu)
             mis = MEASUREITEMSTRUCT.from_address(lparam)
@@ -2662,22 +2737,70 @@ class Tray:
         items += [dict(kind="sep"),
                   dict(kind="toggle", id=1, icon="light", text=tr("ambilight"), on=s.enabled),
                   dict(kind="toggle", id=20, icon="power", text=tr("start_windows"), on=self.autostart),
-                  dict(kind="toggle", id=24, icon="sync", text=tr("updates"), on=s.check_updates),
                   dict(kind="sep"), dict(kind="label", text=tr("mode")),
                   dict(kind="radio", id=2, icon="monitor", text=tr("zones"), checked=s.mode == "zones"),
                   dict(kind="radio", id=3, icon="palette", text=tr("average"), checked=s.mode == "average"),
                   dict(kind="segments", id=10, icon="sun", text=tr("brightness"), values=(25, 50, 75, 100),
                        value=round(s.brightness)),
                   dict(kind="sep"), dict(kind="label", text=tr("about")),
+                  dict(kind="action", id=26, icon="sync", text=tr("updates"), busy=self.checking,
+                       status=self._check_status(), statuses=(tr("up_to_date"), tr("check_failed"), "v00.00.00")),
+                  dict(kind="toggle", id=24, icon="clock", text=tr("auto_check"), on=s.check_updates),
                   dict(kind="action", id=23, icon="person", text=tr("made_by", author=AUTHOR), link=True),
                   dict(kind="action", id=22, icon="star", text=tr("star"), accent=True, link=True),
                   dict(kind="action", id=21, icon="doc", text=tr("open_log")),
                   dict(kind="sep"),
-                  dict(kind="action", id=99, icon="close", text=tr("quit"))]
+                  dict(kind="action", id=99, icon="quit", text=tr("quit"))]
         for i, it in enumerate(items):
             if i == self.hover:
                 it["hover_seg"] = self.hover_seg
         return items
+
+    def _check_status(self):
+        """Result of the last "check for updates" click, kept 10 minutes: (text, colour, glyph) or None."""
+        if self.checking or not self.check_result or time.monotonic() - self.check_time > 600:
+            return None
+        if self.check_result == "found" and self.state.new_version:
+            return f"v{self.state.new_version}", MenuPainter.ACCENT, None
+        if self.check_result == "latest":
+            return tr("up_to_date"), MenuPainter.GREEN, "check"
+        return tr("check_failed"), MenuPainter.AMBER, "warning"
+
+    def check_now(self):
+        """The "check for updates" button: asks GitHub in the background while the row shows a loader."""
+        if self.checking:
+            return
+        self.checking, self.check_result = True, None
+        if self.flyout:
+            user32.SetTimer(self.flyout, 1, 33, None)
+        s, started = self.state, time.monotonic()
+
+        def work():
+            try:
+                info = latest_release()
+                tag = info["version"]
+                if tag and _version_tuple(tag) > _version_tuple(__version__):
+                    s.new_version, s.update_page, s.update_info = tag, info["page"], info
+                    log(f"Update available: {tag}")
+                    result = "found"
+                else:
+                    result = "latest"
+            except Exception as e:  # offline, rate limited...
+                log(f"Update check failed ({e.__class__.__name__}: {e})")
+                result = "error"
+            time.sleep(max(0.0, 0.8 - (time.monotonic() - started)))  # long enough to see the loader
+            self.check_result = result
+            user32.PostMessageW(self.hwnd, self.WM_CHECKED, 0, 0)
+
+        threading.Thread(target=work, name="glowback-check", daemon=True).start()
+
+    def _fit_flyout(self):
+        """Resizes the open panel to its content (a row appears when a new version is found), still docked."""
+        _, w, h = self._layout()
+        pt, work, screen, bar = self.fly_place
+        x, y = dock_flyout(pt, w, h, self.painter.px(12), work, screen, bar)
+        user32.SetWindowPos(self.flyout, None, x, y, w, h, 0x0014)  # SWP_NOZORDER | SWP_NOACTIVATE
+        user32.InvalidateRect(self.flyout, None, False)
 
     def _layout(self):
         """Rows (top, bottom) and the panel size, from the painter's measurements."""
@@ -2712,6 +2835,7 @@ class Tray:
         mi = MONITORINFOEXW()
         mi.cbSize = sizeof(mi)
         user32.GetMonitorInfoW(mon, byref(mi))
+        self.fly_place = (pt, mi.rcWork, mi.rcMonitor, bar)
         x, y = dock_flyout(pt, w, h, self.painter.px(12), mi.rcWork, mi.rcMonitor, bar)
         hinst = k32.GetModuleHandleW(None)
         self.flyout = user32.CreateWindowExW(0x00000080 | 0x00000008, "GlowbackFlyout", "Glowback", 0x80000000,
@@ -2725,19 +2849,27 @@ class Tray:
             dwmapi.DwmSetWindowAttribute(self.flyout, attr, byref(v), 4)
         user32.ShowWindow(self.flyout, 5)  # SW_SHOW
         user32.SetForegroundWindow(self.flyout)
+        if self.checking:  # reopened while a check is running: keep the loader turning
+            user32.SetTimer(self.flyout, 1, 33, None)
 
     def _hit(self, x, y):
+        """(row, part) under the mouse: part is a brightness choice, or "close" for the header's button."""
         rows, _, _ = self._layout()
         items = self._items()
+        rc = wt.RECT()
+        user32.GetClientRect(self.flyout, byref(rc))
+        l, r = self.painter.px(6), rc.right - self.painter.px(6)
         for i, (t, b) in enumerate(rows):
             if t <= y < b:
                 seg = None
                 if items[i]["kind"] == "segments":
-                    rc = wt.RECT()
-                    user32.GetClientRect(self.flyout, byref(rc))
-                    for k, (x0, y0, x1, y1) in enumerate(self.painter.segment_rects(items[i], self.painter.px(6), t, rc.right - self.painter.px(6), b)):
+                    for k, (x0, y0, x1, y1) in enumerate(self.painter.segment_rects(items[i], l, t, r, b)):
                         if x0 <= x < x1:
                             seg = k
+                elif items[i]["kind"] == "header":
+                    x0, y0, x1, y1 = self.painter.close_rect(l, t, r, b)
+                    if x0 <= x < x1 and y0 <= y < y1:
+                        seg = "close"
                 return i, seg
         return None, None
 
@@ -2765,6 +2897,9 @@ class Tray:
 
     def _click(self, i, seg):
         items = self._items()
+        if i is not None and items[i]["kind"] == "header" and seg == "close":
+            user32.PostMessageW(self.flyout, 0x0010, 0, 0)  # WM_CLOSE: the panel only, Glowback keeps running
+            return
         if i is None or "id" not in items[i]:
             return
         s, cid = self.state, items[i]["id"]
@@ -2781,6 +2916,8 @@ class Tray:
         elif cid == 10:
             if seg is not None:
                 s.update(brightness=items[i]["values"][seg])
+        elif cid == 26:
+            self.check_now()
         else:  # links, update, quit: close the panel first
             user32.PostMessageW(self.flyout, 0x0010, 0, 0)
             if cid == 21:
@@ -2802,6 +2939,12 @@ class Tray:
             return 0
         if msg == 0x0014:  # WM_ERASEBKGND: painted in WM_PAINT
             return 1
+        if msg == 0x0113:  # WM_TIMER: the update loader turns
+            if self.checking:
+                user32.InvalidateRect(hwnd, None, False)
+            else:
+                user32.KillTimer(hwnd, 1)
+            return 0
         if msg == 0x0200 and self.painter:  # WM_MOUSEMOVE
             x, y = ctypes.c_short(lparam & 0xFFFF).value, ctypes.c_short((lparam >> 16) & 0xFFFF).value
             hit = self._hit(x, y)
