@@ -32,7 +32,7 @@ import time
 from ctypes import byref, sizeof
 from operator import itemgetter, mul
 
-__version__ = "0.3.1"
+__version__ = "0.3.2"
 
 if sys.platform != "win32":
     sys.exit("Glowback runs on Windows 10/11 (it drives HID LampArray / Dynamic Lighting devices).")
@@ -2142,6 +2142,11 @@ class NOTIFYICONDATAW(ctypes.Structure):
                 ("guidItem", GUID), ("hBalloonIcon", HANDLE)]
 
 
+class APPBARDATA(ctypes.Structure):
+    _fields_ = [("cbSize", wt.DWORD), ("hWnd", HANDLE), ("uCallbackMessage", wt.UINT), ("uEdge", wt.UINT),
+                ("rc", wt.RECT), ("lParam", wt.LPARAM)]
+
+
 _sig(user32.RegisterClassExW, wt.WORD, ctypes.POINTER(WNDCLASSEXW))
 _sig(user32.CreateWindowExW, HANDLE, wt.DWORD, wt.LPCWSTR, wt.LPCWSTR, wt.DWORD, ctypes.c_int, ctypes.c_int,
      ctypes.c_int, ctypes.c_int, HANDLE, HANDLE, HANDLE, ctypes.c_void_p)
@@ -2163,6 +2168,8 @@ _sig(user32.LoadImageW, HANDLE, HANDLE, wt.LPCWSTR, wt.UINT, ctypes.c_int, ctype
 _sig(user32.GetSystemMetrics, ctypes.c_int, ctypes.c_int)
 _sig(user32.DestroyIcon, wt.BOOL, HANDLE)
 _sig(shell32.Shell_NotifyIconW, wt.BOOL, wt.DWORD, ctypes.POINTER(NOTIFYICONDATAW))
+_sig(shell32.SHAppBarMessage, ctypes.c_size_t, wt.DWORD, ctypes.POINTER(APPBARDATA))
+_sig(user32.MonitorFromRect, HANDLE, ctypes.POINTER(wt.RECT), wt.DWORD)
 _sig(k32.GetModuleHandleW, HANDLE, wt.LPCWSTR)
 _sig(user32.LoadCursorW, HANDLE, HANDLE, ctypes.c_void_p)
 _sig(user32.GetClientRect, wt.BOOL, HANDLE, ctypes.POINTER(wt.RECT))
@@ -2486,6 +2493,31 @@ except (OSError, AttributeError):
     shcore = None
 
 
+def taskbar():
+    """The taskbar that holds the notification area: (edge, rect), edge 0 left, 1 top, 2 right, 3 bottom."""
+    abd = APPBARDATA()
+    abd.cbSize = sizeof(abd)
+    if shell32.SHAppBarMessage(5, byref(abd)):  # ABM_GETTASKBARPOS
+        return abd.uEdge, abd.rc
+    return None
+
+
+def dock_flyout(pt, w, h, gap, work, screen, bar):
+    """Top-left corner of the w x h panel opened from the tray icon clicked at pt: against the taskbar, like
+    Windows' own flyouts. (Placed from the cursor, it was left floating mid-screen whenever the icon sat in the
+    hidden-icons overflow, which closes as soon as the panel opens.)"""
+    def clamp(v, lo, hi):
+        return max(lo, min(v, hi))
+    edge, rc = bar or (3, wt.RECT(work.left, work.bottom, work.right, work.bottom))
+    if edge in (1, 3):  # taskbar on top or at the bottom: centred on the icon, along the taskbar
+        x = clamp(pt.x - w // 2, work.left + gap, work.right - w - gap)
+        y = max(rc.bottom, work.top) + gap if edge == 1 else min(rc.top, work.bottom) - h - gap
+    else:  # on the left or the right (Windows 10)
+        y = clamp(pt.y - h // 2, work.top + gap, work.bottom - h - gap)
+        x = max(rc.right, work.left) + gap if edge == 0 else min(rc.left, work.right) - w - gap
+    return clamp(x, screen.left, screen.right - w), clamp(y, screen.top, screen.bottom - h)
+
+
 class Tray:
     """Notification-area icon: pause/resume, mode, brightness, start with Windows, quit."""
     WM_TRAY, WM_CLOSE_APP, WM_UPDATE = 0x8001, 0x8002, 0x8003
@@ -2659,10 +2691,14 @@ class Tray:
             width = max(width, m.itemWidth)
         return rows, width + p(12), y + p(6)
 
-    def _open_flyout(self):
-        pt = wt.POINT()
-        user32.GetCursorPos(byref(pt))
-        mon = user32.MonitorFromPoint(pt, 2)  # MONITOR_DEFAULTTONEAREST
+    def _open_flyout(self, pt=None):
+        if pt is None:
+            pt = wt.POINT()
+            user32.GetCursorPos(byref(pt))
+        mon, bar = user32.MonitorFromPoint(pt, 2), taskbar()  # MONITOR_DEFAULTTONEAREST
+        if bar and user32.MonitorFromRect(byref(bar[1]), 2) != mon:  # opened from the keyboard, cursor elsewhere:
+            mon = user32.MonitorFromRect(byref(bar[1]), 2)  # open at the notification-area end of the taskbar
+            pt = wt.POINT(bar[1].right - 1, bar[1].bottom - 1)
         dpi_x, dpi_y = wt.UINT(96), wt.UINT(96)
         if shcore:
             shcore.GetDpiForMonitor(mon, 0, byref(dpi_x), byref(dpi_y))
@@ -2676,10 +2712,7 @@ class Tray:
         mi = MONITORINFOEXW()
         mi.cbSize = sizeof(mi)
         user32.GetMonitorInfoW(mon, byref(mi))
-        work, gap = mi.rcWork, self.painter.px(12)
-        x = min(max(pt.x - w // 2, work.left + gap), work.right - w - gap)
-        y = min(pt.y, work.bottom) - h - gap if pt.y > (work.top + work.bottom) // 2 else max(pt.y, work.top) + gap
-        y = min(max(y, work.top + gap), work.bottom - h - gap)
+        x, y = dock_flyout(pt, w, h, self.painter.px(12), mi.rcWork, mi.rcMonitor, bar)
         hinst = k32.GetModuleHandleW(None)
         self.flyout = user32.CreateWindowExW(0x00000080 | 0x00000008, "GlowbackFlyout", "Glowback", 0x80000000,
                                              x, y, w, h, None, None, hinst, None)  # TOOLWINDOW|TOPMOST, POPUP
