@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "glowback"
-version = "0.1.0"
-description = "Ambilight for monitors with RGB LEDs on the back: real-time screen sync for Windows Dynamic Lighting (HID LampArray) devices"
+version = "0.2.0"
+description = "Ambilight for monitors with RGB LEDs on the back: real-time, per-LED screen sync for Windows Dynamic Lighting (HID LampArray) and OpenRGB devices. HDR, fullscreen video, tray icon."
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
