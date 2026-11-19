@@ -83,7 +83,12 @@ jobs:
           Copy-Item dist\glowback.exe, dist\GlowbackTray.exe build\unsigned\apps
           Copy-Item dist\Glowback\Glowback.exe build\unsigned\apps\app
           Copy-Item $uninstaller[0].FullName build\unsigned\apps\uninstaller\unins000.exe
-          Get-ChildItem build\unsigned\apps -Recurse -File | ForEach-Object { "{0,10:N0}  {1}" -f $_.Length, $_.FullName }
+          # SignPath refuses files whose product name or version differ (installer/signpath/apps.xml)
+          Get-ChildItem build\unsigned\apps -Recurse -File | ForEach-Object {
+            $v = $_.VersionInfo
+            "{0,10:N0}  {1}  ({2} {3})" -f $_.Length, $_.FullName, $v.ProductName, $v.ProductVersion
+            if ($v.ProductName -ne "Glowback" -or $v.ProductVersion -ne $env:VERSION) { throw "$($_.Name): product name and version must be Glowback $env:VERSION" }
+          }
 
       - name: Upload the apps for signing
         id: unsigned-apps
@@ -140,6 +145,9 @@ jobs:
           $signed = @(if ($env:SIGN -ne "none") { "/DSignedUninstaller" })
           & $env:ISCC "/DMyAppVersion=$env:VERSION" @signed installer\glowback.iss
           if ($LASTEXITCODE) { throw "ISCC failed" }
+          $v = (Get-Item dist\GlowbackSetup.exe).VersionInfo  # checked by SignPath too (installer/signpath/installer.xml)
+          "GlowbackSetup.exe: $($v.ProductName) $($v.ProductVersion)"
+          if ($v.ProductName -ne "Glowback" -or $v.ProductVersion -ne $env:VERSION) { throw "GlowbackSetup.exe: product name and version must be Glowback $env:VERSION" }
 
       - name: Upload the installer for signing
         id: unsigned-installer
