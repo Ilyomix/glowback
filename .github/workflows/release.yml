@@ -83,11 +83,12 @@ jobs:
           Copy-Item dist\glowback.exe, dist\GlowbackTray.exe build\unsigned\apps
           Copy-Item dist\Glowback\Glowback.exe build\unsigned\apps\app
           Copy-Item $uninstaller[0].FullName build\unsigned\apps\uninstaller\unins000.exe
-          # SignPath refuses files whose product name or version differ (installer/signpath/apps.xml)
+          # SignPath refuses files whose product name or version differ (installer/signpath/apps.xml). Inno Setup
+          # pads both with spaces in the uninstaller and installer; SignPath accepts padded values, so trim them.
           Get-ChildItem build\unsigned\apps -Recurse -File | ForEach-Object {
-            $v = $_.VersionInfo
-            "{0,10:N0}  {1}  ({2} {3})" -f $_.Length, $_.FullName, $v.ProductName, $v.ProductVersion
-            if ($v.ProductName -ne "Glowback" -or $v.ProductVersion -ne $env:VERSION) { throw "$($_.Name): product name and version must be Glowback $env:VERSION" }
+            $name, $ver = $_.VersionInfo.ProductName, $_.VersionInfo.ProductVersion
+            "{0,10:N0}  {1}  ({2} {3})" -f $_.Length, $_.FullName, "$name".Trim(), "$ver".Trim()
+            if ("$name".Trim() -ne "Glowback" -or "$ver".Trim() -ne $env:VERSION) { throw "$($_.Name): product name and version must be Glowback $env:VERSION" }
           }
 
       - name: Upload the apps for signing
@@ -146,8 +147,9 @@ jobs:
           & $env:ISCC "/DMyAppVersion=$env:VERSION" @signed installer\glowback.iss
           if ($LASTEXITCODE) { throw "ISCC failed" }
           $v = (Get-Item dist\GlowbackSetup.exe).VersionInfo  # checked by SignPath too (installer/signpath/installer.xml)
-          "GlowbackSetup.exe: $($v.ProductName) $($v.ProductVersion)"
-          if ($v.ProductName -ne "Glowback" -or $v.ProductVersion -ne $env:VERSION) { throw "GlowbackSetup.exe: product name and version must be Glowback $env:VERSION" }
+          $name, $ver = "$($v.ProductName)".Trim(), "$($v.ProductVersion)".Trim()  # Inno Setup pads them with spaces
+          "GlowbackSetup.exe: $name $ver"
+          if ($name -ne "Glowback" -or $ver -ne $env:VERSION) { throw "GlowbackSetup.exe: product name and version must be Glowback $env:VERSION" }
 
       - name: Upload the installer for signing
         id: unsigned-installer
