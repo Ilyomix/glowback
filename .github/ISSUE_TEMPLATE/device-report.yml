@@ -1,0 +1,40 @@
+name: "Device report"
+description: "Tell us if Glowback works (or not) with your monitor or LED device"
+title: "[Device] <brand and model>"
+labels: ["device-report"]
+body:
+  - type: input
+    id: model
+    attributes:
+      label: Device model
+      placeholder: "AOC AGON PRO AG276QZD2"
+    validations:
+      required: true
+  - type: dropdown
+    id: result
+    attributes:
+      label: Does it work?
+      options:
+        - "Yes, out of the box"
+        - "Yes, with --mirror and/or --flip"
+        - "Partially"
+        - "No"
+    validations:
+      required: true
+  - type: textarea
+    id: list
+    attributes:
+      label: Output of `glowback --list`
+      render: text
+    validations:
+      required: true
+  - type: input
+    id: windows
+    attributes:
+      label: Windows version
+      placeholder: "Windows 11 24H2"
+  - type: textarea
+    id: notes
+    attributes:
+      label: Notes, video or GIF
+      description: "Drag and drop a short clip of your setup. It helps a lot!"

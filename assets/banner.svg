@@ -1,0 +1,37 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 560" width="1280" height="560" role="img" aria-label="Glowback: Ambilight for monitors with RGB LEDs on the back">
+  <defs>
+    <filter id="blur" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur stdDeviation="46"/>
+    </filter>
+    <linearGradient id="screen" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#1b4dff"/>
+      <stop offset="0.45" stop-color="#9b2cff"/>
+      <stop offset="1" stop-color="#ff7a18"/>
+    </linearGradient>
+    <linearGradient id="sky" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.18"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0"/>
+    </linearGradient>
+  </defs>
+  <rect width="1280" height="560" rx="28" fill="#0b0d12"/>
+  <!-- glow on the wall, one blob per LED zone -->
+  <g filter="url(#blur)" opacity="0.95">
+    <ellipse cx="300" cy="250" rx="120" ry="150" fill="#1b4dff"/>
+    <ellipse cx="460" cy="120" rx="150" ry="70" fill="#4b3cff"/>
+    <ellipse cx="640" cy="105" rx="150" ry="70" fill="#9b2cff"/>
+    <ellipse cx="820" cy="120" rx="150" ry="70" fill="#d6309a"/>
+    <ellipse cx="980" cy="250" rx="120" ry="150" fill="#ff7a18"/>
+    <ellipse cx="640" cy="420" rx="300" ry="70" fill="#ff4f6d" opacity="0.8"/>
+  </g>
+  <!-- monitor -->
+  <rect x="356" y="128" width="568" height="322" rx="12" fill="#06070a"/>
+  <rect x="368" y="140" width="544" height="298" rx="4" fill="url(#screen)"/>
+  <rect x="368" y="140" width="544" height="150" rx="4" fill="url(#sky)"/>
+  <path d="M368 380 L480 300 L560 350 L660 270 L760 340 L840 290 L912 330 L912 438 L368 438 Z" fill="#0b0d12" opacity="0.55"/>
+  <rect x="610" y="450" width="60" height="44" fill="#06070a"/>
+  <rect x="540" y="492" width="200" height="12" rx="6" fill="#06070a"/>
+  <!-- title -->
+  <text x="640" y="236" text-anchor="middle" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="84" font-weight="700" fill="#ffffff">Glowback</text>
+  <text x="640" y="284" text-anchor="middle" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="26" fill="#ffffff" opacity="0.92">Ambilight for monitors with RGB LEDs on the back</text>
+  <text x="640" y="545" text-anchor="middle" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="20" fill="#9aa3b2">Windows Dynamic Lighting · HID LampArray · zero dependencies · one file</text>
+</svg>
