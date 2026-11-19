@@ -44,7 +44,7 @@ Glowback n'est lié à aucune marque. Il pilote tout appareil que l'**Éclairage
 - 💡 **Couleurs lumineuses et fidèles** : une courbe de luminosité qui conserve la teinte garde la lueur visible dans les scènes sombres.
 - 🪟 **Une vraie application Windows** : installateur, menu Démarrer, lancement au démarrage, menu sombre près de l'horloge avec l'état en direct, désinstallation propre depuis *Paramètres → Applications*.
 - 🔄 **Mises à jour signalées** : Glowback vérifie GitHub une fois par jour et vous prévient quand une nouvelle version sort. Un interrupteur permet de le désactiver.
-- 🏠 **Home Assistant et Google Assistant** : Glowback apparaît comme une lumière à piloter depuis vos tableaux de bord, vos automatisations ou à la voix.
+- 🏠 **Home Assistant, Google Assistant, Alexa et Siri** : Glowback apparaît comme une lumière à piloter depuis vos tableaux de bord, vos automatisations ou à la voix.
 - 🌍 **6 langues** : français, anglais, espagnol, allemand, italien, portugais, selon la langue de Windows.
 - 🔌 **Plug and play** : détecte automatiquement les appareils Éclairage dynamique et OpenRGB, et lit la position physique de chaque LED.
 - 🖥️ **Multi-écran** : chaque appareil LED suit son propre écran (reconnu par son nom EDID).
@@ -102,7 +102,7 @@ Les réglages sont mémorisés. Des outils supplémentaires sont dans le menu D�
 
 ## 🏠 Home Assistant et Google Assistant
 
-Glowback peut apparaître dans [Home Assistant](https://www.home-assistant.io) comme une lumière : pilotez la lumière d'ambiance depuis vos tableaux de bord et vos automatisations, ou à la voix avec Google Assistant et Alexa.
+Glowback peut apparaître dans [Home Assistant](https://www.home-assistant.io) comme une lumière : pilotez la lumière d'ambiance depuis vos tableaux de bord et vos automatisations, ou à la voix avec Google Assistant, Alexa et Siri.
 
 1. **Dans Home Assistant** : installez l'application **Mosquitto broker** (*Paramètres → Applications*) et démarrez-la. Home Assistant propose ensuite l'intégration **MQTT** dans *Paramètres → Appareils et services* : ajoutez-la.
 2. **Un utilisateur pour Glowback** (conseillé) : *Paramètres → Personnes → Utilisateurs → Ajouter un utilisateur*, par exemple `glowback`. Si *Utilisateurs* n'apparaît pas, activez le *Mode avancé* dans votre profil.
@@ -119,6 +119,8 @@ Glowback apparaît alors dans *Paramètres → Appareils et services → MQTT* :
 Elle passe en *indisponible* quand le PC est éteint ou Glowback fermé. Le mot de passe est chiffré pour votre compte Windows et n'est envoyé qu'à votre broker.
 
 **Google Assistant** : avec [Home Assistant Cloud](https://www.nabucasa.com), ouvrez *Paramètres → Assistants vocaux → Exposer* et exposez **Glowback**, puis dites *« Ok Google, éteins Glowback »* ou *« Ok Google, mets Glowback à 50 % »*. Sans abonnement, suivez la [configuration manuelle de Google Assistant](https://www.home-assistant.io/integrations/google_assistant/) de Home Assistant. Alexa fonctionne de la même façon.
+
+**Siri et l'app Maison d'Apple** : ajoutez l'intégration [HomeKit Bridge](https://www.home-assistant.io/integrations/homekit/) de Home Assistant (*Paramètres → Appareils et services → Ajouter une intégration* ; le domaine *Lumière* suffit). Ensuite, dans l'app Maison de l'iPhone, touchez *Ajouter un accessoire* et scannez le code d'appairage que Home Assistant affiche dans ses notifications. Dites *« Dis Siri, éteins Glowback »* ou *« Dis Siri, mets Glowback à 50 % »*. Maison ne gère pas les effets de lumière : le mode se règle dans le panneau de Glowback ou dans Home Assistant.
 
 Exemple d'automatisation, lumière d'ambiance coupée à minuit :
 
@@ -209,7 +211,7 @@ Utilisez *Tester les LED* dans le menu Démarrer (ou `glowback --test`). Si gauc
 - [x] Capture DXGI, HDR, détection des bandes noires
 - [x] Sortie OpenRGB (détectée automatiquement), guide DIY RP2040, balance des blancs
 - [x] 6 langues
-- [x] Home Assistant, et par lui Google Assistant et Alexa
+- [x] Home Assistant, et par lui Google Assistant, Alexa et Siri
 - [ ] Installateur signé et `winget install Glowback`
 - [ ] Écrans en mode portrait dans la capture DXGI
 - [ ] Firmware RP2040 précompilé (.uf2)
@@ -220,7 +222,7 @@ Si Glowback a illuminé votre bureau, **mettez une étoile au dépôt** : ça ai
 
 ---
 
-<sub>Mots-clés : lumière d'ambiance PC, éclairage d'ambiance écran, synchronisation RGB écran, rétroéclairage mural, bias lighting, écran gaming RGB, Éclairage dynamique Windows 11, HID LampArray, OpenRGB synchronisation écran, LED arrière écran, lumière d'ambiance HDR, alternative à Ambilight pour PC, alternative à Hyperion.</sub>
+<sub>Mots-clés : lumière d'ambiance PC, éclairage d'ambiance écran, synchronisation RGB écran, rétroéclairage mural, bias lighting, écran gaming RGB, Éclairage dynamique Windows 11, HID LampArray, OpenRGB synchronisation écran, LED arrière écran, lumière d'ambiance HDR, alternative à Ambilight pour PC, alternative à Hyperion, lumière d'ambiance Home Assistant, HomeKit, Siri.</sub>
 
 <sub>Ambilight est une marque de Koninklijke Philips N.V. / TP Vision. Les autres noms de produits sont des marques de leurs propriétaires respectifs. Glowback est un projet open source indépendant, sans lien ni approbation de leur part. Inter est sous [licence SIL Open Font](licenses/Inter-OFL.txt).</sub>
 

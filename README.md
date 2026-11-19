@@ -45,7 +45,7 @@ Glowback is not tied to one brand. It drives any LED device that **Windows Dynam
 - 💡 **Bright, true colors**: a hue-preserving brightness curve keeps the glow visible in dark scenes.
 - 🪟 **A real Windows app**: installer, Start menu, start with Windows, a dark tray menu with live status, and clean uninstall from *Settings → Apps*.
 - 🔄 **Update notifications**: Glowback checks GitHub once a day and tells you when a new version is out. One switch turns it off.
-- 🏠 **Home Assistant & Google Assistant**: Glowback shows up as a light you switch from dashboards, automations or by voice.
+- 🏠 **Home Assistant, Google Assistant, Alexa & Siri**: Glowback shows up as a light you switch from dashboards, automations or by voice.
 - 🌍 **6 languages**: English, French, Spanish, German, Italian and Portuguese, picked from your Windows language.
 - 🔌 **Plug and play**: finds Dynamic Lighting devices and OpenRGB automatically, and reads the physical position of every LED.
 - 🖥️ **Multi-monitor**: each LED device follows its own screen (matched by the monitor's EDID name).
@@ -103,7 +103,7 @@ Settings are remembered. Extra tools are in the Start menu: *Test the LEDs* and 
 
 ## 🏠 Home Assistant & Google Assistant
 
-Glowback can show up in [Home Assistant](https://www.home-assistant.io) as a light: switch the ambient light from your dashboards and automations, or by voice with Google Assistant and Alexa.
+Glowback can show up in [Home Assistant](https://www.home-assistant.io) as a light: switch the ambient light from your dashboards and automations, or by voice with Google Assistant, Alexa and Siri.
 
 1. **In Home Assistant**: *Settings → Apps → Install app → Mosquitto broker*, install it and start it. Home Assistant then offers the **MQTT** integration in *Settings → Devices & services*: add it.
 2. **A user for Glowback** (recommended): *Settings → People → Users → Add user*, for example `glowback`. If you don't see *Users*, turn on *Advanced mode* in your profile.
@@ -120,6 +120,8 @@ Glowback then appears in *Settings → Devices & services → MQTT*:
 It shows as *unavailable* while the PC is off or Glowback is closed. The password is encrypted for your Windows account and only sent to your broker.
 
 **Google Assistant**: with [Home Assistant Cloud](https://www.nabucasa.com), open *Settings → Voice assistants → Expose* and expose **Glowback**, then say *"Hey Google, turn off Glowback"* or *"Hey Google, set Glowback to 50%"*. Without the subscription, follow Home Assistant's [manual Google Assistant setup](https://www.home-assistant.io/integrations/google_assistant/). Alexa works the same way.
+
+**Siri and Apple Home**: add Home Assistant's [HomeKit Bridge](https://www.home-assistant.io/integrations/homekit/) integration (*Settings → Devices & services → Add integration*; the *Light* domain is enough). Then, in the Home app on your iPhone, tap *Add Accessory* and scan the pairing code Home Assistant shows in its notifications. Say *"Hey Siri, turn off Glowback"* or *"Hey Siri, set Glowback to 50%"*. Apple Home has no light effects, so the mode stays in Glowback's panel and in Home Assistant.
 
 Example automation, ambient light off at midnight:
 
@@ -218,7 +220,7 @@ Use *Test the LEDs* in the Start menu (or `glowback --test`). If left and right 
 - [x] DXGI capture, HDR, letterbox detection
 - [x] OpenRGB output (auto-detected), DIY RP2040 guide, white balance
 - [x] 6 languages
-- [x] Home Assistant, and through it Google Assistant and Alexa
+- [x] Home Assistant, and through it Google Assistant, Alexa and Siri
 - [ ] Code-signed installer and `winget install Glowback`
 - [ ] Rotated (portrait) screens in DXGI capture
 - [ ] Prebuilt RP2040 firmware (.uf2)
@@ -231,7 +233,7 @@ If Glowback lit up your desk, **star the repo**. It helps other owners of RGB mo
 
 ---
 
-<sub>Keywords: ambient light PC, monitor ambient lighting, screen sync RGB, bias lighting, monitor RGB sync with screen, gaming monitor RGB, Windows 11 Dynamic Lighting, HID LampArray, OpenRGB screen sync, rear RGB monitor, immersive lighting, HDR ambient light, ambilight alternative for PC, Hyperion alternative, Prismatik alternative.</sub>
+<sub>Keywords: ambient light PC, monitor ambient lighting, screen sync RGB, bias lighting, monitor RGB sync with screen, gaming monitor RGB, Windows 11 Dynamic Lighting, HID LampArray, OpenRGB screen sync, rear RGB monitor, immersive lighting, HDR ambient light, ambilight alternative for PC, Hyperion alternative, Prismatik alternative, Home Assistant ambient light, Apple HomeKit, Siri.</sub>
 
 <sub>Ambilight is a trademark of Koninklijke Philips N.V. / TP Vision. Other product names are trademarks of their respective owners. Glowback is an independent open-source project, not affiliated with or endorsed by them. Inter is licensed under the [SIL Open Font License](licenses/Inter-OFL.txt).</sub>
 

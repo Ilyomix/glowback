@@ -34,7 +34,7 @@ O Glowback não depende de nenhuma marca: ele controla qualquer dispositivo que 
 - 💡 **Cores brilhantes e fiéis**, mesmo em cenas escuras.
 - 🪟 **Um app de Windows de verdade**: instalador, menu Iniciar, inicialização com o Windows, menu escuro ao lado do relógio com o status ao vivo, desinstalação em *Configurações → Aplicativos*.
 - 🔄 **Aviso de atualizações** uma vez por dia (pode ser desativado).
-- 🏠 **Home Assistant e Google Assistente**: o Glowback aparece como uma luz controlada pelos painéis, automações ou por voz.
+- 🏠 **Home Assistant, Google Assistente, Alexa e Siri**: o Glowback aparece como uma luz controlada pelos painéis, automações ou por voz.
 - 🌍 **6 idiomas**, conforme o idioma do Windows.
 - 🔌 **Plug and play**: detecta automaticamente dispositivos de Iluminação dinâmica e o OpenRGB.
 - 🪶 **Leve**: cerca de 0,5 ms de CPU por quadro.
@@ -65,7 +65,7 @@ Clique com o botão direito no ícone do Glowback ao lado do relógio: **status*
 
 ## 🏠 Home Assistant e Google Assistente
 
-O Glowback pode aparecer no Home Assistant como uma luz (liga/desliga, brilho e modo), controlada pelos painéis, pelas automações, pelo Google Assistente e pela Alexa. Instale o app **Mosquitto broker** no Home Assistant e, no painel do Glowback, clique em **Home Assistant** e informe o endereço, o usuário e a senha. [Guia completo (em inglês)](README.md#-home-assistant--google-assistant).
+O Glowback pode aparecer no Home Assistant como uma luz (liga/desliga, brilho e modo), controlada pelos painéis, pelas automações, pelo Google Assistente, pela Alexa e pela Siri (app Casa da Apple, com a integração HomeKit Bridge do Home Assistant). Instale o app **Mosquitto broker** no Home Assistant e, no painel do Glowback, clique em **Home Assistant** e informe o endereço, o usuário e a senha. [Guia completo (em inglês)](README.md#-home-assistant--google-assistant).
 
 ## 🗑️ Desinstalar
 
