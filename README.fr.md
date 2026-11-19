@@ -25,7 +25,7 @@
 <p align="center">
   <a href="#-installation">Installation</a> ·
   <a href="#-mon-écran-est-il-compatible-">Compatibilité</a> ·
-  <a href="#-menu-de-licône">Menu</a> ·
+  <a href="#-lapplication">Application</a> ·
   <a href="#%EF%B8%8F-désinstaller">Désinstaller</a> ·
   <a href="#-faq">FAQ</a> ·
   <a href="https://ilyomix.github.io/glowback/fr/">Site</a>
@@ -42,7 +42,8 @@ Glowback n'est lié à aucune marque. Il pilote tout appareil que l'**Éclairage
 - 🎯 **Une zone par LED** : chaque LED est projetée sur le bord d'écran le plus proche, pour que la lumière autour de l'écran prolonge l'image. Un mode « couleur moyenne » existe aussi.
 - 🎬 **Films, jeux, HDR** : la capture GPU (DXGI) voit la vidéo et les jeux en plein écran, gère le HDR et **ignore les bandes noires des films**.
 - 💡 **Couleurs lumineuses et fidèles** : une courbe de luminosité qui conserve la teinte garde la lueur visible dans les scènes sombres.
-- 🪟 **Une vraie application Windows** : installateur, menu Démarrer, lancement au démarrage, menu sombre près de l'horloge avec l'état en direct, désinstallation propre depuis *Paramètres → Applications*.
+- 🪟 **Une vraie application Windows** : une fenêtre avec un aperçu en direct de vos LED, des réglages rapides depuis l'icône près de l'horloge, installateur, menu Démarrer, lancement au démarrage et désinstallation propre depuis *Paramètres → Applications*.
+- ⏳ **La synchro quand vous voulez** : quand une app est lancée, au premier plan ou en plein écran, sur l'écran de votre choix. Le reste du temps, les LED gardent leur propre effet.
 - 🔄 **Mises à jour signalées** : Glowback vérifie GitHub une fois par jour et vous prévient quand une nouvelle version sort. Un interrupteur permet de le désactiver.
 - 🏠 **Home Assistant, Google Assistant, Alexa et Siri** : Glowback apparaît comme une lumière à piloter depuis vos tableaux de bord, vos automatisations ou à la voix.
 - 🌍 **6 langues** : français, anglais, espagnol, allemand, italien, portugais, selon la langue de Windows.
@@ -86,19 +87,38 @@ Glowback fonctionne avec votre écran (ou ruban LED, boîtier, lampe…) si **l'
 
 Ça marche sur un autre écran ? Ouvrez un [rapport d'appareil](https://github.com/Ilyomix/glowback/issues/new?template=device-report.yml) avec la sortie de `glowback --list` et une courte vidéo : chaque rapport ajoute une ligne à ce tableau.
 
-## 🪟 Menu de l'icône
+## 🪟 L'application
 
-Clic droit (ou gauche) sur l'icône Glowback près de l'horloge :
+<p align="center"><img src="docs/img/app-fr.webp" width="760" alt="La fenêtre de Glowback : aperçu en direct de la lumière derrière l'écran, mode et luminosité"></p>
 
-- **État** : actif avec le nombre de LED, en pause, ou en recherche de LED
-- **Lumière d'ambiance** : pause ou reprise. En pause, les LED reprennent l'effet de l'appareil
-- Interrupteurs **Lancer au démarrage** et **Vérifier les mises à jour**
-- **Home Assistant** : état de la connexion, cliquez pour le connecter
-- **Mode** : chaque LED suit sa zone, ou une seule couleur moyenne
-- **Luminosité** : 100 / 75 / 50 / 25 %
-- **Créé par Ilyomix**, **Mettre une étoile sur GitHub**, **Ouvrir le journal**, **Quitter**
+Lancez Glowback depuis le menu Démarrer et sa fenêtre s'ouvre. Fermez-la et Glowback continue en arrière-plan : double-cliquez sur son icône près de l'horloge pour la rouvrir, ou cliquez une fois pour un panneau rapide.
 
-Les réglages sont mémorisés. Des outils supplémentaires sont dans le menu Démarrer : *Tester les LED* et *Calibrer la balance des blancs*.
+- **Lumière d'ambiance** : un aperçu en direct de la lumière que vos LED projettent sur le mur, l'interrupteur, le mode (chaque LED suit sa zone, ou une seule couleur moyenne) et la luminosité
+- **Quand synchroniser** : des [conditions](#-quand-synchroniser) pour ne suivre l'écran qu'à certains moments
+- **Home Assistant** : état et réglage de la connexion, ce que voit Home Assistant, assistants vocaux
+- **Paramètres** : lancement au démarrage, mises à jour (tout de suite, ou automatiquement une fois par jour), langue de l'interface, journal
+- **À propos** : version, site web, code source, signaler un problème
+
+En pause, les LED reprennent l'effet de l'appareil. Les réglages sont mémorisés. Des outils supplémentaires sont dans le menu Démarrer : *Tester les LED* et *Calibrer la balance des blancs*.
+
+## ⏳ Quand synchroniser
+
+Par défaut, Glowback suit l'écran tout le temps. Sur la page **Quand synchroniser**, ajoutez des conditions : Glowback ne suit alors l'écran que quand l'une d'elles est remplie, et le reste du temps les LED affichent leur propre effet, comme en pause.
+
+Une condition, c'est une **app** (une app ouverte, un autre programme, ou n'importe quelle app), **quand** (elle est lancée, au premier plan ou en plein écran) et **où** (n'importe quel écran, l'écran des LED ou un autre). Par exemple :
+
+| App | Quand | Écran | Glowback suit l'écran... |
+|---|---|---|---|
+| VLC | Est au premier plan | N'importe quel écran | pendant que vous regardez quelque chose dans VLC |
+| N'importe quelle app | Est en plein écran | L'écran des LED | pendant les jeux et les vidéos en plein écran sur l'écran des LED |
+| Steam | Est lancée | N'importe quel écran | tant que Steam est ouvert |
+
+Glowback vérifie quatre fois par seconde et reconnaît aussi les apps du Store (Netflix, Disney+...). En ligne de commande (mémorisé ; un Glowback lancé suit en moins de 2 secondes) :
+
+```
+glowback --sync-when foreground:vlc.exe --sync-when "fullscreen:*@leds"
+glowback --sync-when always
+```
 
 ## 🏠 Home Assistant et Google Assistant
 
@@ -164,6 +184,7 @@ Pour le couper un moment, utilisez l'interrupteur **Lumière d'ambiance** du men
 | `--device` | appareils d'ambiance | Partie du nom ou `VID:PID`, ou `all` pour inclure claviers et souris |
 | `--openrgb [HÔTE:PORT\|off]` | `auto` | Serveur SDK OpenRGB à utiliser (détecté automatiquement sur ce PC) |
 | `--home-assistant mqtt://UTILISATEUR:MOTDEPASSE@HÔTE\|off` | | Affiche Glowback dans [Home Assistant](#-home-assistant-et-google-assistant) (mémorisé) |
+| `--sync-when QUAND:APP[@ÉCRAN]\|always` | | Ne suit l'écran que quand une app est lancée, au premier plan ou en plein écran ([quand synchroniser](#-quand-synchroniser) ; mémorisé, répétable) |
 | `--strip-start` / `--strip-ccw` | `bottom-left` | Début et sens des rubans LED OpenRGB |
 | `--mirror` / `--flip` | non | Inverse gauche/droite ou haut/bas |
 | `--calibrate` · `--white-balance R,G,B` | | Balance des blancs par appareil (interactive) ou multiplicateurs fixes |
@@ -207,11 +228,12 @@ Utilisez *Tester les LED* dans le menu Démarrer (ou `glowback --test`). Si gauc
 
 ## 🗺️ Feuille de route
 
-- [x] Menu de l'icône, installateur, lancement au démarrage, désinstallation, mises à jour signalées
+- [x] Une application avec aperçu en direct, panneau rapide, installateur, lancement au démarrage, désinstallation, mises à jour signalées
 - [x] Capture DXGI, HDR, détection des bandes noires
 - [x] Sortie OpenRGB (détectée automatiquement), guide DIY RP2040, balance des blancs
 - [x] 6 langues
 - [x] Home Assistant, et par lui Google Assistant, Alexa et Siri
+- [x] Conditions de synchro : une app lancée, au premier plan ou en plein écran, sur un écran donné
 - [ ] Installateur signé et `winget install Glowback`
 - [ ] Écrans en mode portrait dans la capture DXGI
 - [ ] Firmware RP2040 précompilé (.uf2)

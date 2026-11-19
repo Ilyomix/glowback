@@ -32,7 +32,8 @@ Glowback non è legato a nessuna marca: controlla qualsiasi dispositivo gestibil
 - 🎯 **Una zona per LED**, proiettata sul bordo dello schermo più vicino. In alternativa, un solo colore medio.
 - 🎬 **Film, giochi, HDR**: cattura tramite GPU (DXGI) a schermo intero, compatibile con l'HDR, **ignora le bande nere**.
 - 💡 **Colori luminosi e fedeli**, anche nelle scene scure.
-- 🪟 **Una vera app per Windows**: installer, menu Start, avvio con Windows, menu scuro accanto all'orologio con lo stato in tempo reale, disinstallazione da *Impostazioni → App*.
+- 🪟 **Una vera app per Windows**: una finestra con un'anteprima in diretta dei tuoi LED, impostazioni rapide dall'icona accanto all'orologio, installer, menu Start, avvio con Windows e disinstallazione pulita da *Impostazioni → App*.
+- ⏳ **Sincronizza solo quando vuoi**: mentre un'app è aperta, in primo piano o a schermo intero, sullo schermo che scegli. Il resto del tempo, i LED mantengono il proprio effetto.
 - 🔄 **Avviso di aggiornamenti** una volta al giorno (disattivabile).
 - 🏠 **Home Assistant, Google Assistant, Alexa e Siri**: Glowback compare come una luce da comandare da dashboard, automazioni o con la voce.
 - 🌍 **6 lingue**, in base alla lingua di Windows.
@@ -59,9 +60,13 @@ Sì, se vale **una** di queste condizioni:
 
 Testato con: AOC AGON PRO AG276QZD2 (47 LED). Funziona sul tuo monitor? [Faccelo sapere](https://github.com/Ilyomix/glowback/issues/new?template=device-report.yml).
 
-## 🪟 Menu dell'icona
+## 🪟 L'app
 
-Clic destro sull'icona di Glowback accanto all'orologio: **stato** (attivo con il numero di LED, in pausa, ricerca), **Luce ambientale** (pausa/ripresa), **Avvia con Windows**, **Home Assistant**, **Controlla aggiornamenti**, **Modalità**, **Luminosità**, **Creato da Ilyomix**, **Metti una stella su GitHub**, **Apri il log**, **Esci**.
+Avviando Glowback dal menu Start si apre la sua finestra: **Luce ambientale** (anteprima in diretta, acceso/spento, modalità, luminosità), **Quando sincronizzare**, **Home Assistant**, **Impostazioni** (avvio con Windows, aggiornamenti, lingua) e **Informazioni**. Chiudendola, Glowback continua in background: fai doppio clic sulla sua icona accanto all'orologio per riaprirla, o un clic per il pannello rapido.
+
+## ⏳ Quando sincronizzare
+
+Di solito Glowback segue lo schermo sempre. Nella pagina **Quando sincronizzare** aggiungi delle condizioni (un'app; quando: aperta, in primo piano o a schermo intero; e su quale schermo): Glowback segue lo schermo solo mentre una è soddisfatta, e il resto del tempo i LED mostrano il proprio effetto. Per esempio: VLC in primo piano, o qualsiasi app a schermo intero sullo schermo dei LED. [Guida completa (in inglese)](README.md#-when-to-sync).
 
 ## 🏠 Home Assistant e Google Assistant
 
