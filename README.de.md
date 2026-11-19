@@ -44,7 +44,7 @@ Glowback ist an keine Marke gebunden: Es steuert jedes Gerät, das die **dynamis
 2. **Schalte die dynamische Beleuchtung von Windows für dieses Gerät aus**: *Einstellungen → Personalisierung → Dynamische Beleuchtung → dein Gerät → „Dynamische Beleuchtung auf meinen Geräten verwenden“ → Aus*.
 3. **Lade [GlowbackSetup.exe](https://github.com/Ilyomix/glowback/releases/latest/download/GlowbackSetup.exe) herunter** und folge dem Assistenten (keine Administratorrechte nötig).
 
-> Windows SmartScreen warnt eventuell vor einem unbekannten Herausgeber, weil die App noch nicht signiert ist: *Weitere Informationen → Trotzdem ausführen*.
+> Windows SmartScreen warnt eventuell vor einem unbekannten Herausgeber, weil die App noch nicht signiert ist: *Weitere Informationen → Trotzdem ausführen*. [Richtlinie zur Codesignierung](CODE_SIGNING.md) · [Datenschutz](PRIVACY.md)
 
 Ausrichtung der LEDs prüfen: *Startmenü → Glowback-Werkzeuge → LEDs testen* (links rot, rechts blau).
 
@@ -88,4 +88,4 @@ Wenn Glowback deinen Schreibtisch erhellt, **gib dem Repository einen Stern**: S
 
 <sub>Ambilight ist eine Marke von Koninklijke Philips N.V. / TP Vision. Glowback ist ein unabhängiges Open-Source-Projekt ohne Verbindung zu ihnen.</sub>
 
-MIT © [Ilyomix](https://github.com/Ilyomix)
+MIT © [Ilyomix](https://github.com/Ilyomix) · [Richtlinie zur Codesignierung](CODE_SIGNING.md) · [Datenschutz](PRIVACY.md)

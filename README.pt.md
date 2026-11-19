@@ -44,7 +44,7 @@ O Glowback não depende de nenhuma marca: ele controla qualquer dispositivo que 
 2. **Desative a Iluminação dinâmica do Windows para esse dispositivo**: *Configurações → Personalização → Iluminação dinâmica → seu dispositivo → "Usar a Iluminação dinâmica nos meus dispositivos" → Desativado*.
 3. **Baixe o [GlowbackSetup.exe](https://github.com/Ilyomix/glowback/releases/latest/download/GlowbackSetup.exe)** e siga o assistente (não precisa de permissão de administrador).
 
-> O Windows SmartScreen pode avisar sobre um editor desconhecido porque o app ainda não é assinado: *Mais informações → Executar assim mesmo*.
+> O Windows SmartScreen pode avisar sobre um editor desconhecido porque o app ainda não é assinado: *Mais informações → Executar assim mesmo*. [Política de assinatura de código](CODE_SIGNING.md) · [Privacidade](PRIVACY.md)
 
 Para conferir a orientação dos LEDs: *menu Iniciar → Ferramentas do Glowback → Testar os LEDs* (esquerda vermelha, direita azul).
 
@@ -88,4 +88,4 @@ Se o Glowback iluminou sua mesa, **dê uma estrela ao repositório**: isso ajuda
 
 <sub>Ambilight é uma marca da Koninklijke Philips N.V. / TP Vision. O Glowback é um projeto de código aberto independente, sem vínculo com eles.</sub>
 
-MIT © [Ilyomix](https://github.com/Ilyomix)
+MIT © [Ilyomix](https://github.com/Ilyomix) · [Política de assinatura de código](CODE_SIGNING.md) · [Privacidade](PRIVACY.md)

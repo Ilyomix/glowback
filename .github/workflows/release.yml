@@ -3,36 +3,190 @@ on:
   push:
     tags: ["v*"]
   workflow_dispatch:
+    inputs:
+      test_signing:
+        description: "Sign with a throwaway self-signed certificate (tests the signing steps without SignPath)"
+        type: boolean
+        default: false
 permissions:
   contents: write
+  actions: read  # SignPath downloads the unsigned files from this run's artifacts
 jobs:
   build:
     runs-on: windows-latest
     defaults:
       run:
         shell: pwsh
+    env:
+      # Code signing (CODE_SIGNING.md) turns on once the repository variable SIGNPATH_ORGANIZATION_ID and the secret
+      # SIGNPATH_API_TOKEN exist. Until then releases are built unsigned, as before.
+      SIGNPATH_ORGANIZATION_ID: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+      SIGNPATH_PROJECT_SLUG: ${{ vars.SIGNPATH_PROJECT_SLUG || 'glowback' }}
+      SIGNPATH_TOKEN_SET: ${{ secrets.SIGNPATH_API_TOKEN != '' }}
+      TEST_SIGNING: ${{ inputs.test_signing }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
 
+      - name: Version and code signing
+        run: |
+          $version = "${{ github.ref_name }}".TrimStart("v")
+          if ($version -notmatch '^\d+\.\d+\.\d+') { $version = (Select-String -Path pyproject.toml -Pattern '^version = "(.+)"').Matches[0].Groups[1].Value }
+          $tag = "${{ github.ref }}".StartsWith("refs/tags/")
+          $sign = "none"
+          if ($env:SIGNPATH_ORGANIZATION_ID) {
+            if ($env:SIGNPATH_TOKEN_SET -ne "true") { throw "SIGNPATH_ORGANIZATION_ID is set but the SIGNPATH_API_TOKEN secret is missing" }
+            $sign = "signpath"
+          } elseif ($env:TEST_SIGNING -eq "true") {
+            if ($tag) { throw "test signing is for branch runs only: a tag run would publish the test-signed files" }
+            $sign = "test"
+          }
+          # Tags are signed with SignPath Foundation's certificate (each request approved by hand), manual runs with
+          # SignPath's test certificate
+          $policy = if ($tag) { "release-signing" } else { "test-signing" }
+          "VERSION=$version" >> $env:GITHUB_ENV
+          "SIGN=$sign" >> $env:GITHUB_ENV
+          "SIGNPATH_POLICY=$policy" >> $env:GITHUB_ENV
+          "TRUSTED_SIGNATURES=$(($sign -eq 'test') -or ($sign -eq 'signpath' -and $tag))" >> $env:GITHUB_ENV
+          "ISCC=${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" >> $env:GITHUB_ENV
+          "Glowback $version, code signing: $sign"
+
       - name: Build the apps (PyInstaller)
         run: |
           python -m pip install pyinstaller
+          # Product name and version on every .exe (required for code signing)
+          python installer/version_info.py $env:VERSION build/version
           $icon = "${{ github.workspace }}\assets\glowback.ico"
-          pyinstaller --noconfirm --onefile --console   --name glowback     --icon $icon glowback.py
-          pyinstaller --noconfirm --onefile --noconsole --name GlowbackTray --icon $icon glowback.py
-          pyinstaller --noconfirm --onedir  --noconsole --name Glowback     --icon $icon --workpath build/app --specpath build/app glowback.py
+          $ver = "${{ github.workspace }}\build\version"
+          pyinstaller --noconfirm --onefile --console   --name glowback     --icon $icon --version-file "$ver\cli.txt"  glowback.py
+          pyinstaller --noconfirm --onefile --noconsole --name GlowbackTray --icon $icon --version-file "$ver\tray.txt" glowback.py
+          pyinstaller --noconfirm --onedir  --noconsole --name Glowback     --icon $icon --version-file "$ver\app.txt"  --workpath build/app --specpath build/app glowback.py
+          dist\glowback.exe --version
+
+      - name: Install Inno Setup
+        run: choco install innosetup --no-progress -y
+
+      # Signing happens in two rounds: first the apps and the installer's uninstaller, then the installer built
+      # from them. The folders match the artifact configurations in installer/signpath/.
+      - name: Collect the apps to sign
+        if: env.SIGN != 'none'
+        run: |
+          # This compile stops on purpose: it leaves the uninstaller in build\uninstaller, to be signed with the apps
+          & $env:ISCC /Q "/DMyAppVersion=$env:VERSION" /DSignedUninstaller installer\glowback.iss
+          $global:LASTEXITCODE = 0
+          $uninstaller = @(Get-ChildItem build\uninstaller\uninst-*.e32)
+          if ($uninstaller.Count -ne 1) { throw "expected 1 uninstaller to sign, found $($uninstaller.Count)" }
+          "UNINSTALLER=$($uninstaller[0].FullName)" >> $env:GITHUB_ENV
+          New-Item -ItemType Directory -Force build\unsigned\apps\app, build\unsigned\apps\uninstaller | Out-Null
+          Copy-Item dist\glowback.exe, dist\GlowbackTray.exe build\unsigned\apps
+          Copy-Item dist\Glowback\Glowback.exe build\unsigned\apps\app
+          Copy-Item $uninstaller[0].FullName build\unsigned\apps\uninstaller\unins000.exe
+          Get-ChildItem build\unsigned\apps -Recurse -File | ForEach-Object { "{0,10:N0}  {1}" -f $_.Length, $_.FullName }
+
+      - name: Upload the apps for signing
+        id: unsigned-apps
+        if: env.SIGN == 'signpath'
+        uses: actions/upload-artifact@v4
+        with:
+          name: unsigned-apps
+          path: build/unsigned/apps
+          if-no-files-found: error
+          overwrite: true
+
+      - name: Sign the apps (SignPath)
+        if: env.SIGN == 'signpath'
+        uses: signpath/github-action-submit-signing-request@v3
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ env.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ env.SIGNPATH_PROJECT_SLUG }}
+          signing-policy-slug: ${{ env.SIGNPATH_POLICY }}
+          artifact-configuration-slug: apps
+          github-artifact-id: ${{ steps.unsigned-apps.outputs.artifact-id }}
+          parameters: |
+            version: ${{ toJSON(env.VERSION) }}
+          wait-for-completion-timeout-in-seconds: 3600  # time to approve the request in SignPath
+          output-artifact-directory: build/signed/apps
+
+      - name: Sign the apps (self-signed test certificate)
+        if: env.SIGN == 'test'
+        shell: powershell
+        run: |
+          $cert = New-SelfSignedCertificate -Type CodeSigningCert -Subject "CN=Glowback test signing (not trusted)" -CertStoreLocation Cert:\CurrentUser\My
+          # Trusted on this runner only, so the checks below behave as they will with a real certificate
+          $root = New-Object System.Security.Cryptography.X509Certificates.X509Store("Root", "LocalMachine")
+          $root.Open("ReadWrite"); $root.Add($cert); $root.Close()
+          "TEST_CERT=$($cert.Thumbprint)" | Out-File -Append -Encoding ascii $env:GITHUB_ENV
+          New-Item -ItemType Directory -Force build\signed | Out-Null
+          Copy-Item build\unsigned\apps build\signed -Recurse
+          Get-ChildItem build\signed\apps -Recurse -Filter *.exe | ForEach-Object {
+            $s = Set-AuthenticodeSignature $_.FullName $cert -HashAlgorithm SHA256
+            if ($s.Status -ne "Valid") { throw "$($_.Name): $($s.Status) $($s.StatusMessage)" }
+          }
+
+      - name: Put the signed apps in place
+        if: env.SIGN != 'none'
+        run: |
+          $s = "build\signed\apps"
+          Copy-Item "$s\glowback.exe", "$s\GlowbackTray.exe" dist -Force
+          Copy-Item "$s\app\Glowback.exe" dist\Glowback -Force
+          Copy-Item "$s\uninstaller\unins000.exe" $env:UNINSTALLER -Force  # the next compile embeds its signature
           dist\glowback.exe --version
 
       - name: Build the installer (Inno Setup)
         run: |
-          choco install innosetup --no-progress -y
-          $version = "${{ github.ref_name }}".TrimStart("v")
-          if ($version -notmatch '^\d+\.\d+\.\d+') { $version = (Select-String -Path pyproject.toml -Pattern '^version = "(.+)"').Matches[0].Groups[1].Value }
-          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" "/DMyAppVersion=$version" installer\glowback.iss
+          $signed = @(if ($env:SIGN -ne "none") { "/DSignedUninstaller" })
+          & $env:ISCC "/DMyAppVersion=$env:VERSION" @signed installer\glowback.iss
           if ($LASTEXITCODE) { throw "ISCC failed" }
+
+      - name: Upload the installer for signing
+        id: unsigned-installer
+        if: env.SIGN == 'signpath'
+        uses: actions/upload-artifact@v4
+        with:
+          name: unsigned-installer
+          path: dist/GlowbackSetup.exe
+          if-no-files-found: error
+          overwrite: true
+
+      - name: Sign the installer (SignPath)
+        if: env.SIGN == 'signpath'
+        uses: signpath/github-action-submit-signing-request@v3
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ env.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ env.SIGNPATH_PROJECT_SLUG }}
+          signing-policy-slug: ${{ env.SIGNPATH_POLICY }}
+          artifact-configuration-slug: installer
+          github-artifact-id: ${{ steps.unsigned-installer.outputs.artifact-id }}
+          parameters: |
+            version: ${{ toJSON(env.VERSION) }}
+          wait-for-completion-timeout-in-seconds: 3600
+          output-artifact-directory: build/signed/installer
+
+      - name: Sign the installer (self-signed test certificate)
+        if: env.SIGN == 'test'
+        shell: powershell
+        run: |
+          $cert = Get-Item "Cert:\CurrentUser\My\$env:TEST_CERT"
+          New-Item -ItemType Directory -Force build\signed\installer | Out-Null
+          Copy-Item dist\GlowbackSetup.exe build\signed\installer
+          $s = Set-AuthenticodeSignature build\signed\installer\GlowbackSetup.exe $cert -HashAlgorithm SHA256
+          if ($s.Status -ne "Valid") { throw "GlowbackSetup.exe: $($s.Status) $($s.StatusMessage)" }
+
+      - name: Check the signatures
+        if: env.SIGN != 'none'
+        run: |
+          Copy-Item build\signed\installer\GlowbackSetup.exe dist -Force
+          foreach ($f in "dist\GlowbackSetup.exe", "dist\GlowbackTray.exe", "dist\glowback.exe", "dist\Glowback\Glowback.exe") {
+            $s = Get-AuthenticodeSignature $f
+            # SignPath's test certificate (manual runs) is not trusted by Windows: only check that the file is signed
+            $ok = if ($env:TRUSTED_SIGNATURES -eq "True") { $s.Status -eq "Valid" } else { $s.SignerCertificate -and $s.Status -notin "NotSigned", "HashMismatch" }
+            if (-not $ok) { throw "$f is not signed correctly: $($s.Status) $($s.StatusMessage)" }
+            "{0}: {1} ({2})" -f $f, $s.SignerCertificate.Subject, $s.Status
+          }
 
       - name: Test install and uninstall
         run: |
@@ -43,6 +197,15 @@ jobs:
           $runKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
           if (-not (Get-ItemProperty $runKey).Glowback) { throw "autostart entry missing" }
           if (-not (Test-Path "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Glowback.lnk")) { throw "Start menu shortcut missing" }
+          & "$app\glowback-cli.exe" --check-updates off  # what the installer runs when its update box is unticked
+          if (-not (Select-String "$env:LOCALAPPDATA\Glowback\settings.json" -Pattern '"check_updates": false' -SimpleMatch -Quiet)) { throw "--check-updates off not saved" }
+          if ($env:SIGN -ne "none") {
+            foreach ($f in "Glowback.exe", "glowback-cli.exe", "unins000.exe") {
+              $s = Get-AuthenticodeSignature "$app\$f"
+              if (-not $s.SignerCertificate -or $s.Status -in "NotSigned", "HashMismatch") { throw "installed $f is not signed: $($s.Status)" }
+              "installed {0}: {1} ({2})" -f $f, $s.SignerCertificate.Subject, $s.Status
+            }
+          }
           Start-Process "$app\unins000.exe" -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART' -Wait
           for ($i = 0; $i -lt 60 -and (Test-Path "$app\Glowback.exe"); $i++) { Start-Sleep 1 }
           if (Test-Path "$app\Glowback.exe") { throw "Glowback.exe still there after uninstall" }
@@ -58,10 +221,19 @@ jobs:
           $lines | Set-Content -Encoding ascii dist\SHA256SUMS.txt
           Get-Content dist\SHA256SUMS.txt
 
+      - name: Release notes
+        run: |
+          $policy = "[Code signing policy](https://github.com/Ilyomix/glowback/blob/main/CODE_SIGNING.md)"
+          $note = if ($env:SIGN -eq "signpath") { "The Windows files are code-signed. $policy" } else {
+            "The Windows files are not code-signed yet, so SmartScreen may warn: click *More info → Run anyway*. $policy" }
+          $note | Set-Content -Encoding utf8 build\release-notes.md
+          Get-Content build\release-notes.md
+
       - name: Publish release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
+          body_path: build/release-notes.md
           files: |
             dist/GlowbackSetup.exe
             dist/GlowbackTray.exe

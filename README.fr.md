@@ -62,7 +62,7 @@ Glowback n'est lié à aucune marque. Il pilote tout appareil que l'**Éclairage
 | Portable | [GlowbackTray.exe](https://github.com/Ilyomix/glowback/releases/latest/download/GlowbackTray.exe) (application) et [glowback.exe](https://github.com/Ilyomix/glowback/releases/latest/download/glowback.exe) (ligne de commande) |
 | Python 3.9+ | `pip install git+https://github.com/Ilyomix/glowback`, puis `glowback --install` |
 
-> Windows SmartScreen peut signaler un éditeur inconnu, car l'application n'est pas encore signée. Cliquez sur *Informations complémentaires → Exécuter quand même*. Le code source et les versions compilées sont publics sur GitHub.
+> Windows SmartScreen peut signaler un éditeur inconnu, car l'application n'est pas encore signée. Cliquez sur *Informations complémentaires → Exécuter quand même*. Le code source et les versions compilées sont publics sur GitHub. [Politique de signature du code](CODE_SIGNING.md) · [Confidentialité](PRIVACY.md)
 
 Glowback s'installe ensuite près de l'horloge. Pour vérifier l'orientation des LED : *menu Démarrer → Outils Glowback → Tester les LED*. La gauche doit être rouge, la droite bleue.
 
@@ -128,6 +128,7 @@ Pour le couper un moment, utilisez l'interrupteur **Lumière d'ambiance** du men
 | `--calibrate` · `--white-balance R,G,B` | | Balance des blancs par appareil (interactive) ou multiplicateurs fixes |
 | `--lang en\|fr\|es\|de\|it\|pt` | langue de Windows | Langue de l'interface |
 | `--install` / `--uninstall` | | Ajoute à Windows ou retire de Windows (démarrage, menu Démarrer) |
+| `--check-updates on\|off` | `on` | Cherche une nouvelle version sur GitHub une fois par jour ([confidentialité](PRIVACY.md)) |
 | `--list` · `--test` · `--stop` | | Lister appareils et écrans · motif de test · arrêter Glowback |
 | `--diy-layout LxH:G,H,D,B` | | Positions des LED pour le [firmware DIY](docs/DIY-LED-strip.md) |
 
@@ -183,4 +184,4 @@ Si Glowback a illuminé votre bureau, **mettez une étoile au dépôt** : ça ai
 
 <sub>Ambilight est une marque de Koninklijke Philips N.V. / TP Vision. Les autres noms de produits sont des marques de leurs propriétaires respectifs. Glowback est un projet open source indépendant, sans lien ni approbation de leur part. Inter est sous [licence SIL Open Font](licenses/Inter-OFL.txt).</sub>
 
-MIT © [Ilyomix](https://github.com/Ilyomix)
+MIT © [Ilyomix](https://github.com/Ilyomix) · [Politique de signature du code](CODE_SIGNING.md) · [Confidentialité](PRIVACY.md)

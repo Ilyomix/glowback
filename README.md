@@ -63,7 +63,7 @@ Glowback is not tied to one brand. It drives any LED device that **Windows Dynam
 | Portable | [GlowbackTray.exe](https://github.com/Ilyomix/glowback/releases/latest/download/GlowbackTray.exe) (app) and [glowback.exe](https://github.com/Ilyomix/glowback/releases/latest/download/glowback.exe) (command line) |
 | Python 3.9+ | `pip install git+https://github.com/Ilyomix/glowback`, then `glowback --install` |
 
-> Windows SmartScreen may warn about an unknown publisher, because the app is not code-signed yet. Click *More info → Run anyway*. The source code and the builds are public on GitHub.
+> Windows SmartScreen may warn about an unknown publisher, because the app is not code-signed yet. Click *More info → Run anyway*. The source code and the builds are public on GitHub. [Code signing policy](CODE_SIGNING.md) · [Privacy policy](PRIVACY.md)
 
 Glowback then sits next to the clock. To check the LED orientation, use *Start menu → Glowback tools → Test the LEDs*: left must be red, right blue.
 
@@ -129,6 +129,7 @@ To turn it off for a while, use the **Ambient light** switch in the tray menu. T
 | `--calibrate` · `--white-balance R,G,B` | | Per-device white balance (interactive) or fixed multipliers |
 | `--lang en\|fr\|es\|de\|it\|pt` | Windows language | Interface language |
 | `--install` / `--uninstall` | | Add to or remove from Windows (startup, Start menu) |
+| `--check-updates on\|off` | `on` | Look for a new version on GitHub once a day ([privacy](PRIVACY.md)) |
 | `--list` · `--test` · `--stop` | | List devices and screens · test pattern · stop Glowback |
 | `--diy-layout WxH:L,T,R,B` | | Print LED positions for the [DIY firmware](docs/DIY-LED-strip.md) |
 
@@ -194,4 +195,4 @@ If Glowback lit up your desk, **star the repo**. It helps other owners of RGB mo
 
 <sub>Ambilight is a trademark of Koninklijke Philips N.V. / TP Vision. Other product names are trademarks of their respective owners. Glowback is an independent open-source project, not affiliated with or endorsed by them. Inter is licensed under the [SIL Open Font License](licenses/Inter-OFL.txt).</sub>
 
-MIT © [Ilyomix](https://github.com/Ilyomix)
+MIT © [Ilyomix](https://github.com/Ilyomix) · [Code signing policy](CODE_SIGNING.md) · [Privacy policy](PRIVACY.md)

@@ -1359,8 +1359,10 @@ class State:
         for k, v in kw.items():
             setattr(self, k, v)
         self.version += 1
-        save_settings({"enabled": self.enabled, "mode": self.mode, "brightness": self.brightness,
-                       "check_updates": self.check_updates})
+        saved = {"enabled": self.enabled, "mode": self.mode, "brightness": self.brightness}
+        if "check_updates" in kw:  # only when switched here: the installer and --check-updates also set it
+            saved["check_updates"] = self.check_updates
+        save_settings(saved)
 
 
 def make_grabber(monitor, args, failed):
@@ -3173,6 +3175,8 @@ def parse_args(argv=None):
     p.add_argument("--install", action="store_true", help="start with Windows + Start menu entry (keeps the other options)")
     p.add_argument("--uninstall", action="store_true", help="stop Glowback and remove it from startup, Start menu and app data")
     p.add_argument("--autostart", choices=["on", "off"], help="start Glowback with Windows (with the other options given)")
+    p.add_argument("--check-updates", choices=["on", "off"],
+                   help="look for a new version on GitHub once a day (saved, default on; applies from the next start)")
     p.add_argument("--background", action="store_true", help="detach from the console (log in %%LOCALAPPDATA%%\\Glowback)")
     p.add_argument("--from-autostart", action="store_true", help=argparse.SUPPRESS)
     p.add_argument("--pause-at-end", action="store_true", help=argparse.SUPPRESS)  # Start menu tools
@@ -3191,10 +3195,10 @@ def _passthrough(raw):
             continue
         if a in ("--install", "--uninstall", "--from-autostart", "--background", "--stop"):
             continue
-        if a == "--autostart":
+        if a in ("--autostart", "--check-updates"):
             skip = True
             continue
-        if a.startswith("--autostart="):
+        if a.startswith(("--autostart=", "--check-updates=")):
             continue
         out.append(a)
     return out
@@ -3218,6 +3222,11 @@ def main(argv=None):
     if args.uninstall:
         cmd_uninstall()
         return
+    if args.check_updates:  # the installer runs this to save its "check for a new version" box
+        save_settings({"check_updates": args.check_updates == "on"})
+        print("Update checks on." if args.check_updates == "on" else "Update checks off.")
+        if not (args.install or args.autostart):
+            return
     if args.install:
         cmd_install(keep)
         return

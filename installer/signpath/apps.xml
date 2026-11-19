@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- SignPath artifact configuration "apps": first signing request of a release (.github/workflows/release.yml).
+     The portable apps, the installed app and the installer's uninstaller, all built from this repository. -->
+<artifact-configuration xmlns="http://signpath.io/artifact-configuration/v1">
+  <parameters>
+    <parameter name="version" required="true" />
+  </parameters>
+  <zip-file>
+    <pe-file-set product-name="Glowback" product-version="${version}">
+      <include path="glowback.exe" />
+      <include path="GlowbackTray.exe" />
+      <include path="app/Glowback.exe" />
+      <include path="uninstaller/unins000.exe" />
+      <for-each>
+        <authenticode-sign />
+      </for-each>
+    </pe-file-set>
+  </zip-file>
+</artifact-configuration>
