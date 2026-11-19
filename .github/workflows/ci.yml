@@ -1,0 +1,26 @@
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+jobs:
+  check:
+    runs-on: windows-latest
+    strategy:
+      matrix:
+        python: ["3.9", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Compile
+        run: python -m py_compile glowback.py
+      - name: Smoke test (no LED hardware on CI)
+        run: |
+          python glowback.py --version
+          python glowback.py --list
+      - name: Install as a package
+        run: |
+          python -m pip install .
+          glowback --version
