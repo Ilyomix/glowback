@@ -32,7 +32,7 @@ import time
 from ctypes import byref, sizeof
 from operator import itemgetter, mul
 
-__version__ = "0.4.0"
+__version__ = "0.5.0"
 
 if sys.platform != "win32":
     sys.exit("Glowback runs on Windows 10/11 (it drives HID LampArray / Dynamic Lighting devices).")
@@ -1341,19 +1341,26 @@ class Output:
         self.box = self.box_grid = None  # letterbox detection, with hysteresis
         self.cand, self.cand_since = None, 0.0
         self.wb = (1.0, 1.0, 1.0)  # white balance multipliers (glowback --calibrate)
+        self.uv = []  # lamp positions 0..1, for the app's live preview
 
 
 class State:
     """Live settings shared between the capture loop and the tray icon."""
 
     def __init__(self, args, enabled=True):
+        saved = load_settings()
         self.enabled = enabled
         self.mode = args.mode
         self.brightness = max(0.0, min(100.0, float(args.brightness)))
-        self.check_updates = bool(load_settings().get("check_updates", True))
+        self.check_updates = bool(saved.get("check_updates", True))
         self.leds = 0              # LEDs currently driven (shown in the tray menu)
         self.new_version = None    # newer version found on GitHub (not `update`: that is the method below)
         self.version = 0
+        self.rules = clean_rules(saved.get("sync_when"))  # sync conditions; none = always follow the screen
+        self.waiting, self.rule_hit = False, None  # no condition holds: the LEDs show their own effect
+        self.screens = []          # names of the screens the LEDs follow
+        self.preview = []          # [(lamp positions 0..1, colors)] per device, for the app's live preview
+        self.notify = lambda: None  # the tray: something shown in the app or the panel changed
 
     def update(self, **kw):
         for k, v in kw.items():
@@ -1363,6 +1370,25 @@ class State:
         if "check_updates" in kw:  # only when switched here: the installer and --check-updates also set it
             saved["check_updates"] = self.check_updates
         save_settings(saved)
+        self.notify()
+
+    def set_rules(self, rules, save=True):
+        """New sync conditions (the app, or glowback --sync-when through settings.json)."""
+        rules = clean_rules(rules)
+        if save:
+            save_settings({"sync_when": rules})
+        if rules != self.rules:
+            self.rules = rules
+            if not rules:
+                self.set_match(None)
+            self.notify()
+
+    def set_match(self, rule):
+        """What the capture loop found: the condition that holds now, or None."""
+        waiting = bool(self.rules) and rule is None
+        if (waiting, rule) != (self.waiting, self.rule_hit):
+            self.waiting, self.rule_hit = waiting, rule
+            self.notify()
 
 
 def make_grabber(monitor, args, failed):
@@ -1388,6 +1414,9 @@ def run(args, stop, state=None):
     t_prev = time.perf_counter()
     warned = paused = False
     seen, shape = -1, None
+    watch, rule_t, file_t, file_mtime = AppWatch(), 0.0, 0.0, None
+    rule_monitors, rule_monitors_t = [], -99.0
+    led_screens = load_settings().get("led_screens") or []  # the screens the LEDs followed last time
     try:
         while True:
             t0 = time.perf_counter()
@@ -1398,8 +1427,30 @@ def run(args, stop, state=None):
                 for o in outputs.values():
                     o.last = None
 
-            # ---- paused from the tray: the LEDs go back to the device's own effect
-            if not state.enabled:
+            # ---- sync conditions (the app's "When to sync" page, glowback --sync-when), checked 4 times a second
+            if t0 >= file_t:  # changes made from the command line land in settings.json
+                file_t = t0 + 2
+                try:
+                    mtime = os.stat(SETTINGS_PATH).st_mtime
+                except OSError:
+                    mtime = None
+                if mtime != file_mtime:
+                    file_mtime = mtime
+                    state.set_rules(load_settings().get("sync_when"), save=False)
+            if state.enabled and state.rules and t0 >= rule_t:
+                rule_t = t0 + 0.25
+                if t0 - rule_monitors_t > 5:
+                    rule_monitors, rule_monitors_t = list_monitors(), t0
+                leds = {o.monitor.device for o in outputs.values() if o.monitor}
+                if not leds:  # not connected yet: the screens the LEDs followed last time, else the primary one
+                    leds = {m.device for m in rule_monitors if (m.name or m.device) in led_screens}
+                    leds = leds or {m.device for m in rule_monitors if m.primary}
+                state.set_match(conditions_met(state.rules, leds, rule_monitors, watch))
+            elif not state.rules and state.waiting:
+                state.set_match(None)
+
+            # ---- paused from the tray, or no sync condition holds: the LEDs go back to the device's own effect
+            if not state.enabled or state.waiting:
                 if not paused:
                     paused = True
                     for o in outputs.values():
@@ -1407,7 +1458,9 @@ def run(args, stop, state=None):
                             o.dev.set_autonomous(True)
                         except OSError:
                             pass
-                    log("Paused: LEDs handed back to the device.")
+                    state.preview = []
+                    log("Paused: LEDs handed back to the device." if not state.enabled else
+                        "No sync condition holds: LEDs handed back to the device.")
                 if stop.wait(0.25):
                     break
                 continue
@@ -1416,7 +1469,8 @@ def run(args, stop, state=None):
                 next_keep = 0.0
                 for o in outputs.values():
                     o.smooth = o.last = None
-                log("Resumed.")
+                hit = state.rule_hit
+                log(f"Resumed: {hit['app'] or 'any app'} {hit['when']}." if hit else "Resumed.")
 
             # ---- (re)scan devices and screens: hot-plug, monitor power cycles, resolution changes
             if t0 >= next_scan:
@@ -1434,6 +1488,7 @@ def run(args, stop, state=None):
                         continue
                     o = outputs[dev.path] = Output(dev)
                     o.wb = args.white_balance or tuple(load_settings().get("white_balance", {}).get(device_key(dev), o.wb))
+                    o.uv = lamp_uv(dev.lamps, args.mirror, args.flip) if dev.lamps else []
                     period = max(period, dev.min_interval)
                     state.leds = sum(len(x.dev.lamps) for x in outputs.values())
                     log(f"Connected: {dev.name} ({len(dev.lamps)} LEDs, {kind_label(dev)})")
@@ -1450,6 +1505,11 @@ def run(args, stop, state=None):
                                 log(f"  {o.dev.name}  <-  screen {m.label()}")
                     for rect in list(grabbers):
                         grabbers.pop(rect).close()
+                    names = sorted({o.monitor.name or o.monitor.device for o in outputs.values() if o.monitor})
+                    state.screens = names
+                    if names and names != led_screens:  # remembered for the "LED screen" condition at next start
+                        led_screens = names
+                        save_settings({"led_screens": names})
                 elif args.capture == "auto":
                     for rect, g in list(grabbers.items()):  # retry DXGI (e.g. it failed on the lock screen)
                         if g.kind == "GDI":
@@ -1553,6 +1613,7 @@ def run(args, stop, state=None):
                     state.leds = sum(len(x.dev.lamps) for x in outputs.values())
                     next_scan = min(next_scan, t0 + 2)
 
+            state.preview = [(o.uv, o.last) for o in outputs.values() if o.last and o.uv]  # the app's live preview
             frames += 1
             if args.verbose and t0 - t_stat >= 2:
                 print(f"  {frames / (t0 - t_stat):5.1f} fps   frame {1000 * (time.perf_counter() - t0):4.1f} ms   "
@@ -1732,6 +1793,77 @@ STRINGS = {
         'ha_err_other': 'The connection failed ({error}).',
         'ha_done_title': 'Connected to Home Assistant',
         'ha_done_text': 'Glowback is in Settings › Devices & services › MQTT.',
+        'open_app': 'Open Glowback',
+        'nav_home': 'Home Assistant',
+        'nav_light': 'Ambient light',
+        'nav_settings': 'Settings',
+        'nav_about': 'About',
+        'app_quit': 'Quit Glowback',
+        'app_background': 'Glowback keeps running in the background. Click its icon next to the clock to come back.',
+        'light_sub': 'The LEDs behind your screen follow the picture, live.',
+        'mode_zones_desc': 'Each LED takes the colors of the picture right next to it.',
+        'mode_average_desc': 'All the LEDs show the average color of the screen.',
+        'sync_when': 'When to sync',
+        'sync_sub': 'Glowback follows the screen all the time, or only while one of your conditions is met. The rest of the time, the LEDs show their own effect.',
+        'sync_always': 'Always',
+        'sync_one': '1 condition',
+        'sync_many': '{n} conditions',
+        'sync_now_on': 'Following the screen: {rule}',
+        'sync_now_waiting': 'No condition is met: the LEDs show their own effect.',
+        'sync_now_always': 'No condition: Glowback follows the screen all the time.',
+        'sync_now_paused': 'The ambient light is paused.',
+        'sync_list': 'Conditions',
+        'sync_empty': 'No condition yet: Glowback follows the screen all the time.',
+        'sync_add_title': 'Add a condition',
+        'sync_app': 'App',
+        'sync_when_label': 'When',
+        'sync_screen': 'Screen',
+        'sync_any_app': 'Any app',
+        'sync_open_apps': 'Open apps',
+        'sync_browse': 'Other program…',
+        'sync_running': 'Is running',
+        'sync_foreground': 'Is in front',
+        'sync_fullscreen': 'Is full screen',
+        'sync_any_screen': 'Any screen',
+        'sync_led_screen': 'The LED screen',
+        'sync_screen_n': 'Screen {n}',
+        'sync_add': 'Add',
+        'sync_remove': 'Remove',
+        'sync_examples': 'For example: a video player in front, any app full screen on the LED screen, or a game launcher running.',
+        'sync_programs': 'Programs',
+        'state_waiting': 'Waiting for a condition',
+        'tip_waiting': 'Glowback: waiting for a condition',
+        'home_sub': 'Switch the ambient light from Home Assistant, its automations and your voice assistant.',
+        'home_connected': 'Connected to {host}',
+        'home_not_set': 'Not set up',
+        'home_not_set_desc': 'Install the Mosquitto broker app in Home Assistant, then connect Glowback to it.',
+        'home_connected_desc': 'Glowback is in Settings › Devices & services › MQTT.',
+        'home_setup': 'Set up',
+        'home_change': 'Change',
+        'home_entities': 'In Home Assistant',
+        'home_light': 'Ambient light on/off, brightness and mode',
+        'home_leds': 'Number of LEDs Glowback drives',
+        'home_update': 'New versions, installed from Home Assistant',
+        'home_voice': 'Voice assistants',
+        'home_voice_text': 'Google Assistant and Alexa work through Home Assistant, Siri and the Home app through its HomeKit Bridge integration.',
+        'settings_sub': 'Startup, updates and language.',
+        'settings_start_desc': 'Glowback starts in the background when you sign in.',
+        'settings_updates': 'Updates',
+        'settings_check_desc': 'Once a day, Glowback asks GitHub whether a new version is out.',
+        'settings_check_now': 'Check now',
+        'settings_new': 'Glowback {version} is available',
+        'settings_lang': 'Language',
+        'settings_lang_label': 'Interface language',
+        'lang_auto': 'Windows language',
+        'settings_help': 'Help',
+        'settings_log_desc': 'What Glowback did, to understand a problem.',
+        'settings_open': 'Open',
+        'about_tagline': 'Ambient light for monitors with RGB LEDs on the back.',
+        'about_version': 'Version {version}',
+        'about_site': 'Website',
+        'about_source': 'Source code and guide',
+        'about_issue': 'Report a problem',
+        'about_license': 'Free and open source, MIT license.',
     },
     'fr': {
         'update_downloading': 'Téléchargement de Glowback {version}…',
@@ -1806,6 +1938,77 @@ STRINGS = {
         'ha_err_other': 'La connexion a échoué ({error}).',
         'ha_done_title': 'Connecté à Home Assistant',
         'ha_done_text': 'Glowback est dans Paramètres › Appareils et services › MQTT.',
+        'open_app': 'Ouvrir Glowback',
+        'nav_home': 'Home Assistant',
+        'nav_light': "Lumière d'ambiance",
+        'nav_settings': 'Paramètres',
+        'nav_about': 'À propos',
+        'app_quit': 'Quitter Glowback',
+        'app_background': "Glowback continue en arrière-plan. Cliquez sur son icône près de l'horloge pour revenir.",
+        'light_sub': "Les LED derrière votre écran suivent l'image, en direct.",
+        'mode_zones_desc': "Chaque LED prend les couleurs de l'image juste à côté d'elle.",
+        'mode_average_desc': "Toutes les LED affichent la couleur moyenne de l'écran.",
+        'sync_when': 'Quand synchroniser',
+        'sync_sub': "Glowback suit l'écran tout le temps, ou seulement quand une de vos conditions est remplie. Le reste du temps, les LED affichent leur propre effet.",
+        'sync_always': 'Toujours',
+        'sync_one': '1 condition',
+        'sync_many': '{n} conditions',
+        'sync_now_on': "Glowback suit l'écran : {rule}",
+        'sync_now_waiting': 'Aucune condition remplie : les LED affichent leur propre effet.',
+        'sync_now_always': "Aucune condition : Glowback suit l'écran tout le temps.",
+        'sync_now_paused': "La lumière d'ambiance est en pause.",
+        'sync_list': 'Conditions',
+        'sync_empty': "Aucune condition pour l'instant : Glowback suit l'écran tout le temps.",
+        'sync_add_title': 'Ajouter une condition',
+        'sync_app': 'App',
+        'sync_when_label': 'Quand',
+        'sync_screen': 'Écran',
+        'sync_any_app': "N'importe quelle app",
+        'sync_open_apps': 'Apps ouvertes',
+        'sync_browse': 'Autre programme…',
+        'sync_running': 'Est lancée',
+        'sync_foreground': 'Est au premier plan',
+        'sync_fullscreen': 'Est en plein écran',
+        'sync_any_screen': "N'importe quel écran",
+        'sync_led_screen': "L'écran des LED",
+        'sync_screen_n': 'Écran {n}',
+        'sync_add': 'Ajouter',
+        'sync_remove': 'Retirer',
+        'sync_examples': "Par exemple : un lecteur vidéo au premier plan, n'importe quelle app en plein écran sur l'écran des LED, ou un lanceur de jeux ouvert.",
+        'sync_programs': 'Programmes',
+        'state_waiting': "En attente d'une condition",
+        'tip_waiting': "Glowback : en attente d'une condition",
+        'home_sub': "Pilotez la lumière d'ambiance depuis Home Assistant, ses automatisations et votre assistant vocal.",
+        'home_connected': 'Connecté à {host}',
+        'home_not_set': 'Pas encore configuré',
+        'home_not_set_desc': "Installez l'application Mosquitto broker dans Home Assistant, puis connectez-y Glowback.",
+        'home_connected_desc': 'Glowback est dans Paramètres › Appareils et services › MQTT.',
+        'home_setup': 'Configurer',
+        'home_change': 'Modifier',
+        'home_entities': 'Dans Home Assistant',
+        'home_light': "Lumière d'ambiance allumée ou éteinte, luminosité et mode",
+        'home_leds': 'Nombre de LED pilotées par Glowback',
+        'home_update': 'Nouvelles versions, installées depuis Home Assistant',
+        'home_voice': 'Assistants vocaux',
+        'home_voice_text': "Google Assistant et Alexa passent par Home Assistant, Siri et l'app Maison par son intégration HomeKit Bridge.",
+        'settings_sub': 'Démarrage, mises à jour et langue.',
+        'settings_start_desc': "Glowback démarre en arrière-plan à l'ouverture de session.",
+        'settings_updates': 'Mises à jour',
+        'settings_check_desc': 'Une fois par jour, Glowback demande à GitHub si une nouvelle version est sortie.',
+        'settings_check_now': 'Rechercher',
+        'settings_new': 'Glowback {version} est disponible',
+        'settings_lang': 'Langue',
+        'settings_lang_label': "Langue de l'interface",
+        'lang_auto': 'Langue de Windows',
+        'settings_help': 'Aide',
+        'settings_log_desc': 'Ce que Glowback a fait, pour comprendre un problème.',
+        'settings_open': 'Ouvrir',
+        'about_tagline': "Lumière d'ambiance pour les écrans à LED RGB au dos.",
+        'about_version': 'Version {version}',
+        'about_site': 'Site web',
+        'about_source': 'Code source et guide',
+        'about_issue': 'Signaler un problème',
+        'about_license': 'Libre et open source, licence MIT.',
     },
     'es': {
         'update_downloading': 'Descargando Glowback {version}…',
@@ -1880,6 +2083,77 @@ STRINGS = {
         'ha_err_other': 'Falló la conexión ({error}).',
         'ha_done_title': 'Conectado a Home Assistant',
         'ha_done_text': 'Glowback está en Configuración › Dispositivos y servicios › MQTT.',
+        'open_app': 'Abrir Glowback',
+        'nav_home': 'Home Assistant',
+        'nav_light': 'Luz ambiental',
+        'nav_settings': 'Configuración',
+        'nav_about': 'Acerca de',
+        'app_quit': 'Salir de Glowback',
+        'app_background': 'Glowback sigue funcionando en segundo plano. Haz clic en su icono junto al reloj para volver.',
+        'light_sub': 'Los LED detrás de tu pantalla siguen la imagen en directo.',
+        'mode_zones_desc': 'Cada LED toma los colores de la imagen justo a su lado.',
+        'mode_average_desc': 'Todos los LED muestran el color medio de la pantalla.',
+        'sync_when': 'Cuándo sincronizar',
+        'sync_sub': 'Glowback sigue la pantalla todo el tiempo, o solo mientras se cumpla una de tus condiciones. El resto del tiempo, los LED muestran su propio efecto.',
+        'sync_always': 'Siempre',
+        'sync_one': '1 condición',
+        'sync_many': '{n} condiciones',
+        'sync_now_on': 'Glowback sigue la pantalla: {rule}',
+        'sync_now_waiting': 'No se cumple ninguna condición: los LED muestran su propio efecto.',
+        'sync_now_always': 'Sin condiciones: Glowback sigue la pantalla todo el tiempo.',
+        'sync_now_paused': 'La luz ambiental está en pausa.',
+        'sync_list': 'Condiciones',
+        'sync_empty': 'Aún no hay condiciones: Glowback sigue la pantalla todo el tiempo.',
+        'sync_add_title': 'Añadir una condición',
+        'sync_app': 'App',
+        'sync_when_label': 'Cuándo',
+        'sync_screen': 'Pantalla',
+        'sync_any_app': 'Cualquier app',
+        'sync_open_apps': 'Apps abiertas',
+        'sync_browse': 'Otro programa…',
+        'sync_running': 'Está abierta',
+        'sync_foreground': 'Está en primer plano',
+        'sync_fullscreen': 'Está en pantalla completa',
+        'sync_any_screen': 'Cualquier pantalla',
+        'sync_led_screen': 'La pantalla de los LED',
+        'sync_screen_n': 'Pantalla {n}',
+        'sync_add': 'Añadir',
+        'sync_remove': 'Quitar',
+        'sync_examples': 'Por ejemplo: un reproductor de vídeo en primer plano, cualquier app en pantalla completa en la pantalla de los LED, o un lanzador de juegos abierto.',
+        'sync_programs': 'Programas',
+        'state_waiting': 'Esperando una condición',
+        'tip_waiting': 'Glowback: esperando una condición',
+        'home_sub': 'Controla la luz ambiental desde Home Assistant, sus automatizaciones y tu asistente de voz.',
+        'home_connected': 'Conectado a {host}',
+        'home_not_set': 'Sin configurar',
+        'home_not_set_desc': 'Instala la app Mosquitto broker en Home Assistant y luego conecta Glowback a ella.',
+        'home_connected_desc': 'Glowback está en Configuración › Dispositivos y servicios › MQTT.',
+        'home_setup': 'Configurar',
+        'home_change': 'Cambiar',
+        'home_entities': 'En Home Assistant',
+        'home_light': 'Luz ambiental encendida o apagada, brillo y modo',
+        'home_leds': 'Número de LED que controla Glowback',
+        'home_update': 'Nuevas versiones, instaladas desde Home Assistant',
+        'home_voice': 'Asistentes de voz',
+        'home_voice_text': 'Google Assistant y Alexa funcionan a través de Home Assistant, Siri y la app Casa con su integración HomeKit Bridge.',
+        'settings_sub': 'Inicio, actualizaciones e idioma.',
+        'settings_start_desc': 'Glowback se inicia en segundo plano al iniciar sesión.',
+        'settings_updates': 'Actualizaciones',
+        'settings_check_desc': 'Una vez al día, Glowback pregunta a GitHub si hay una versión nueva.',
+        'settings_check_now': 'Buscar',
+        'settings_new': 'Glowback {version} está disponible',
+        'settings_lang': 'Idioma',
+        'settings_lang_label': 'Idioma de la interfaz',
+        'lang_auto': 'Idioma de Windows',
+        'settings_help': 'Ayuda',
+        'settings_log_desc': 'Lo que ha hecho Glowback, para entender un problema.',
+        'settings_open': 'Abrir',
+        'about_tagline': 'Luz ambiental para monitores con LED RGB en la parte trasera.',
+        'about_version': 'Versión {version}',
+        'about_site': 'Sitio web',
+        'about_source': 'Código fuente y guía',
+        'about_issue': 'Informar de un problema',
+        'about_license': 'Libre y de código abierto, licencia MIT.',
     },
     'de': {
         'update_downloading': 'Glowback {version} wird heruntergeladen …',
@@ -1954,6 +2228,77 @@ STRINGS = {
         'ha_err_other': 'Verbindung fehlgeschlagen ({error}).',
         'ha_done_title': 'Mit Home Assistant verbunden',
         'ha_done_text': 'Glowback findest du unter Einstellungen › Geräte & Dienste › MQTT.',
+        'open_app': 'Glowback öffnen',
+        'nav_home': 'Home Assistant',
+        'nav_light': 'Umgebungslicht',
+        'nav_settings': 'Einstellungen',
+        'nav_about': 'Info',
+        'app_quit': 'Glowback beenden',
+        'app_background': 'Glowback läuft im Hintergrund weiter. Klicke auf das Symbol neben der Uhr, um zurückzukehren.',
+        'light_sub': 'Die LEDs hinter deinem Bildschirm folgen dem Bild, live.',
+        'mode_zones_desc': 'Jede LED übernimmt die Farben des Bildes direkt neben ihr.',
+        'mode_average_desc': 'Alle LEDs zeigen die Durchschnittsfarbe des Bildschirms.',
+        'sync_when': 'Wann synchronisieren',
+        'sync_sub': 'Glowback folgt dem Bildschirm immer oder nur, solange eine deiner Bedingungen erfüllt ist. Den Rest der Zeit zeigen die LEDs ihren eigenen Effekt.',
+        'sync_always': 'Immer',
+        'sync_one': '1 Bedingung',
+        'sync_many': '{n} Bedingungen',
+        'sync_now_on': 'Glowback folgt dem Bildschirm: {rule}',
+        'sync_now_waiting': 'Keine Bedingung erfüllt: Die LEDs zeigen ihren eigenen Effekt.',
+        'sync_now_always': 'Keine Bedingung: Glowback folgt dem Bildschirm immer.',
+        'sync_now_paused': 'Das Umgebungslicht ist pausiert.',
+        'sync_list': 'Bedingungen',
+        'sync_empty': 'Noch keine Bedingung: Glowback folgt dem Bildschirm immer.',
+        'sync_add_title': 'Bedingung hinzufügen',
+        'sync_app': 'App',
+        'sync_when_label': 'Wann',
+        'sync_screen': 'Bildschirm',
+        'sync_any_app': 'Beliebige App',
+        'sync_open_apps': 'Geöffnete Apps',
+        'sync_browse': 'Anderes Programm …',
+        'sync_running': 'Läuft',
+        'sync_foreground': 'Ist im Vordergrund',
+        'sync_fullscreen': 'Ist im Vollbild',
+        'sync_any_screen': 'Beliebiger Bildschirm',
+        'sync_led_screen': 'Der LED-Bildschirm',
+        'sync_screen_n': 'Bildschirm {n}',
+        'sync_add': 'Hinzufügen',
+        'sync_remove': 'Entfernen',
+        'sync_examples': 'Zum Beispiel: ein Videoplayer im Vordergrund, eine beliebige App im Vollbild auf dem LED-Bildschirm oder ein laufender Spiele-Launcher.',
+        'sync_programs': 'Programme',
+        'state_waiting': 'Wartet auf eine Bedingung',
+        'tip_waiting': 'Glowback: wartet auf eine Bedingung',
+        'home_sub': 'Steuere das Umgebungslicht aus Home Assistant, seinen Automationen und deinem Sprachassistenten.',
+        'home_connected': 'Verbunden mit {host}',
+        'home_not_set': 'Nicht eingerichtet',
+        'home_not_set_desc': 'Installiere in Home Assistant die App Mosquitto broker und verbinde Glowback damit.',
+        'home_connected_desc': 'Glowback findest du unter Einstellungen › Geräte & Dienste › MQTT.',
+        'home_setup': 'Einrichten',
+        'home_change': 'Ändern',
+        'home_entities': 'In Home Assistant',
+        'home_light': 'Umgebungslicht an/aus, Helligkeit und Modus',
+        'home_leds': 'Anzahl der LEDs, die Glowback steuert',
+        'home_update': 'Neue Versionen, aus Home Assistant installiert',
+        'home_voice': 'Sprachassistenten',
+        'home_voice_text': 'Google Assistant und Alexa funktionieren über Home Assistant, Siri und die Home-App über seine Integration HomeKit Bridge.',
+        'settings_sub': 'Start, Updates und Sprache.',
+        'settings_start_desc': 'Glowback startet bei der Anmeldung im Hintergrund.',
+        'settings_updates': 'Updates',
+        'settings_check_desc': 'Einmal am Tag fragt Glowback bei GitHub nach einer neuen Version.',
+        'settings_check_now': 'Suchen',
+        'settings_new': 'Glowback {version} ist verfügbar',
+        'settings_lang': 'Sprache',
+        'settings_lang_label': 'Sprache der Oberfläche',
+        'lang_auto': 'Windows-Sprache',
+        'settings_help': 'Hilfe',
+        'settings_log_desc': 'Was Glowback getan hat, um ein Problem zu verstehen.',
+        'settings_open': 'Öffnen',
+        'about_tagline': 'Umgebungslicht für Monitore mit RGB-LEDs auf der Rückseite.',
+        'about_version': 'Version {version}',
+        'about_site': 'Website',
+        'about_source': 'Quellcode und Anleitung',
+        'about_issue': 'Problem melden',
+        'about_license': 'Frei und quelloffen, MIT-Lizenz.',
     },
     'it': {
         'update_downloading': 'Download di Glowback {version}…',
@@ -2028,6 +2373,77 @@ STRINGS = {
         'ha_err_other': 'Connessione non riuscita ({error}).',
         'ha_done_title': 'Connesso a Home Assistant',
         'ha_done_text': 'Glowback è in Impostazioni › Dispositivi e servizi › MQTT.',
+        'open_app': 'Apri Glowback',
+        'nav_home': 'Home Assistant',
+        'nav_light': 'Luce ambientale',
+        'nav_settings': 'Impostazioni',
+        'nav_about': 'Informazioni',
+        'app_quit': 'Esci da Glowback',
+        'app_background': "Glowback continua in background. Fai clic sulla sua icona accanto all'orologio per tornare.",
+        'light_sub': "I LED dietro lo schermo seguono l'immagine, in diretta.",
+        'mode_zones_desc': "Ogni LED prende i colori dell'immagine proprio accanto a sé.",
+        'mode_average_desc': 'Tutti i LED mostrano il colore medio dello schermo.',
+        'sync_when': 'Quando sincronizzare',
+        'sync_sub': 'Glowback segue lo schermo sempre, oppure solo mentre è soddisfatta una delle tue condizioni. Il resto del tempo, i LED mostrano il proprio effetto.',
+        'sync_always': 'Sempre',
+        'sync_one': '1 condizione',
+        'sync_many': '{n} condizioni',
+        'sync_now_on': 'Glowback segue lo schermo: {rule}',
+        'sync_now_waiting': 'Nessuna condizione soddisfatta: i LED mostrano il proprio effetto.',
+        'sync_now_always': 'Nessuna condizione: Glowback segue lo schermo sempre.',
+        'sync_now_paused': 'La luce ambientale è in pausa.',
+        'sync_list': 'Condizioni',
+        'sync_empty': 'Ancora nessuna condizione: Glowback segue lo schermo sempre.',
+        'sync_add_title': 'Aggiungi una condizione',
+        'sync_app': 'App',
+        'sync_when_label': 'Quando',
+        'sync_screen': 'Schermo',
+        'sync_any_app': 'Qualsiasi app',
+        'sync_open_apps': 'App aperte',
+        'sync_browse': 'Altro programma…',
+        'sync_running': 'È aperta',
+        'sync_foreground': 'È in primo piano',
+        'sync_fullscreen': 'È a schermo intero',
+        'sync_any_screen': 'Qualsiasi schermo',
+        'sync_led_screen': 'Lo schermo dei LED',
+        'sync_screen_n': 'Schermo {n}',
+        'sync_add': 'Aggiungi',
+        'sync_remove': 'Rimuovi',
+        'sync_examples': 'Per esempio: un lettore video in primo piano, qualsiasi app a schermo intero sullo schermo dei LED, o un launcher di giochi aperto.',
+        'sync_programs': 'Programmi',
+        'state_waiting': 'In attesa di una condizione',
+        'tip_waiting': 'Glowback: in attesa di una condizione',
+        'home_sub': 'Comanda la luce ambientale da Home Assistant, dalle sue automazioni e dal tuo assistente vocale.',
+        'home_connected': 'Connesso a {host}',
+        'home_not_set': 'Non configurato',
+        'home_not_set_desc': "Installa l'app Mosquitto broker in Home Assistant, poi collega Glowback.",
+        'home_connected_desc': 'Glowback è in Impostazioni › Dispositivi e servizi › MQTT.',
+        'home_setup': 'Configura',
+        'home_change': 'Modifica',
+        'home_entities': 'In Home Assistant',
+        'home_light': 'Luce ambientale accesa o spenta, luminosità e modalità',
+        'home_leds': 'Numero di LED comandati da Glowback',
+        'home_update': 'Nuove versioni, installate da Home Assistant',
+        'home_voice': 'Assistenti vocali',
+        'home_voice_text': "Google Assistant e Alexa funzionano tramite Home Assistant, Siri e l'app Casa con la sua integrazione HomeKit Bridge.",
+        'settings_sub': 'Avvio, aggiornamenti e lingua.',
+        'settings_start_desc': "Glowback si avvia in background all'accesso.",
+        'settings_updates': 'Aggiornamenti',
+        'settings_check_desc': 'Una volta al giorno, Glowback chiede a GitHub se è uscita una nuova versione.',
+        'settings_check_now': 'Controlla',
+        'settings_new': 'Glowback {version} è disponibile',
+        'settings_lang': 'Lingua',
+        'settings_lang_label': "Lingua dell'interfaccia",
+        'lang_auto': 'Lingua di Windows',
+        'settings_help': 'Aiuto',
+        'settings_log_desc': 'Cosa ha fatto Glowback, per capire un problema.',
+        'settings_open': 'Apri',
+        'about_tagline': 'Luce ambientale per monitor con LED RGB sul retro.',
+        'about_version': 'Versione {version}',
+        'about_site': 'Sito web',
+        'about_source': 'Codice sorgente e guida',
+        'about_issue': 'Segnala un problema',
+        'about_license': 'Libero e open source, licenza MIT.',
     },
     'pt': {
         'update_downloading': 'Baixando o Glowback {version}…',
@@ -2102,6 +2518,77 @@ STRINGS = {
         'ha_err_other': 'A conexão falhou ({error}).',
         'ha_done_title': 'Conectado ao Home Assistant',
         'ha_done_text': 'O Glowback está em Configurações › Dispositivos e serviços › MQTT.',
+        'open_app': 'Abrir o Glowback',
+        'nav_home': 'Home Assistant',
+        'nav_light': 'Luz ambiente',
+        'nav_settings': 'Configurações',
+        'nav_about': 'Sobre',
+        'app_quit': 'Sair do Glowback',
+        'app_background': 'O Glowback continua em segundo plano. Clique no ícone dele ao lado do relógio para voltar.',
+        'light_sub': 'Os LEDs atrás da sua tela acompanham a imagem, ao vivo.',
+        'mode_zones_desc': 'Cada LED pega as cores da imagem bem ao lado dele.',
+        'mode_average_desc': 'Todos os LEDs mostram a cor média da tela.',
+        'sync_when': 'Quando sincronizar',
+        'sync_sub': 'O Glowback acompanha a tela o tempo todo, ou só enquanto uma das suas condições for atendida. No resto do tempo, os LEDs mostram o próprio efeito.',
+        'sync_always': 'Sempre',
+        'sync_one': '1 condição',
+        'sync_many': '{n} condições',
+        'sync_now_on': 'O Glowback acompanha a tela: {rule}',
+        'sync_now_waiting': 'Nenhuma condição atendida: os LEDs mostram o próprio efeito.',
+        'sync_now_always': 'Sem condições: o Glowback acompanha a tela o tempo todo.',
+        'sync_now_paused': 'A luz ambiente está pausada.',
+        'sync_list': 'Condições',
+        'sync_empty': 'Ainda não há condições: o Glowback acompanha a tela o tempo todo.',
+        'sync_add_title': 'Adicionar uma condição',
+        'sync_app': 'App',
+        'sync_when_label': 'Quando',
+        'sync_screen': 'Tela',
+        'sync_any_app': 'Qualquer app',
+        'sync_open_apps': 'Apps abertos',
+        'sync_browse': 'Outro programa…',
+        'sync_running': 'Está aberto',
+        'sync_foreground': 'Está em primeiro plano',
+        'sync_fullscreen': 'Está em tela cheia',
+        'sync_any_screen': 'Qualquer tela',
+        'sync_led_screen': 'A tela dos LEDs',
+        'sync_screen_n': 'Tela {n}',
+        'sync_add': 'Adicionar',
+        'sync_remove': 'Remover',
+        'sync_examples': 'Por exemplo: um player de vídeo em primeiro plano, qualquer app em tela cheia na tela dos LEDs, ou um launcher de jogos aberto.',
+        'sync_programs': 'Programas',
+        'state_waiting': 'Aguardando uma condição',
+        'tip_waiting': 'Glowback: aguardando uma condição',
+        'home_sub': 'Controle a luz ambiente pelo Home Assistant, pelas automações dele e pelo seu assistente de voz.',
+        'home_connected': 'Conectado a {host}',
+        'home_not_set': 'Não configurado',
+        'home_not_set_desc': 'Instale o app Mosquitto broker no Home Assistant e conecte o Glowback a ele.',
+        'home_connected_desc': 'O Glowback está em Configurações › Dispositivos e serviços › MQTT.',
+        'home_setup': 'Configurar',
+        'home_change': 'Alterar',
+        'home_entities': 'No Home Assistant',
+        'home_light': 'Luz ambiente ligada ou desligada, brilho e modo',
+        'home_leds': 'Número de LEDs controlados pelo Glowback',
+        'home_update': 'Novas versões, instaladas pelo Home Assistant',
+        'home_voice': 'Assistentes de voz',
+        'home_voice_text': 'O Google Assistente e a Alexa funcionam pelo Home Assistant, a Siri e o app Casa pela integração HomeKit Bridge dele.',
+        'settings_sub': 'Inicialização, atualizações e idioma.',
+        'settings_start_desc': 'O Glowback inicia em segundo plano quando você entra no Windows.',
+        'settings_updates': 'Atualizações',
+        'settings_check_desc': 'Uma vez por dia, o Glowback pergunta ao GitHub se saiu uma nova versão.',
+        'settings_check_now': 'Verificar',
+        'settings_new': 'O Glowback {version} está disponível',
+        'settings_lang': 'Idioma',
+        'settings_lang_label': 'Idioma da interface',
+        'lang_auto': 'Idioma do Windows',
+        'settings_help': 'Ajuda',
+        'settings_log_desc': 'O que o Glowback fez, para entender um problema.',
+        'settings_open': 'Abrir',
+        'about_tagline': 'Luz ambiente para monitores com LEDs RGB na traseira.',
+        'about_version': 'Versão {version}',
+        'about_site': 'Site',
+        'about_source': 'Código-fonte e guia',
+        'about_issue': 'Relatar um problema',
+        'about_license': 'Livre e de código aberto, licença MIT.',
     },
 }
 LANGS = tuple(STRINGS)
@@ -2469,6 +2956,9 @@ class MenuPainter:
              "link": ""}
     ICONS.update(dismiss="", quit="", check="", warning="", clock="")
     ICONS.update(home="")
+    ICONS.update(filter="", settings="", info="", chev_down="", chev_right="",
+                 delete="", globe="", code="", bug="", window="", add="",
+                 lang="", mic="", apps="", pause="", search="")
 
     def __init__(self, scale, icon):
         self.k, self.icon = scale, icon
@@ -2742,14 +3232,349 @@ def dock_flyout(pt, w, h, gap, work, screen, bar):
     return clamp(x, screen.left, screen.right - w), clamp(y, screen.top, screen.bottom - h)
 
 
+# =============================================================================
+# Sync conditions: follow the screen only while an app runs, is in front or full screen, on a given screen
+# =============================================================================
+WHEN = ("running", "foreground", "fullscreen")
+DESKTOP_CLASSES = ("Progman", "WorkerW", "Shell_TrayWnd", "Shell_SecondaryTrayWnd")
+WNDENUMPROC = ctypes.WINFUNCTYPE(wt.BOOL, HANDLE, wt.LPARAM)
+version_dll = ctypes.WinDLL("version")
+
+
+class PROCESSENTRY32W(ctypes.Structure):
+    _fields_ = [("dwSize", wt.DWORD), ("cntUsage", wt.DWORD), ("th32ProcessID", wt.DWORD),
+                ("th32DefaultHeapID", ctypes.c_size_t), ("th32ModuleID", wt.DWORD), ("cntThreads", wt.DWORD),
+                ("th32ParentProcessID", wt.DWORD), ("pcPriClassBase", ctypes.c_long), ("dwFlags", wt.DWORD),
+                ("szExeFile", ctypes.c_wchar * 260)]
+
+
+_sig(user32.GetForegroundWindow, HANDLE)
+_sig(user32.GetWindowThreadProcessId, wt.DWORD, HANDLE, ctypes.POINTER(wt.DWORD))
+_sig(user32.EnumWindows, wt.BOOL, WNDENUMPROC, wt.LPARAM)
+_sig(user32.EnumChildWindows, wt.BOOL, HANDLE, WNDENUMPROC, wt.LPARAM)
+_sig(user32.IsWindowVisible, wt.BOOL, HANDLE)
+_sig(user32.IsIconic, wt.BOOL, HANDLE)
+_sig(user32.GetWindowRect, wt.BOOL, HANDLE, ctypes.POINTER(wt.RECT))
+_sig(user32.GetWindowLongW, ctypes.c_long, HANDLE, ctypes.c_int)
+_sig(user32.GetClassNameW, ctypes.c_int, HANDLE, wt.LPWSTR, ctypes.c_int)
+_sig(user32.MonitorFromWindow, HANDLE, HANDLE, wt.DWORD)
+_sig(k32.OpenProcess, HANDLE, wt.DWORD, wt.BOOL, wt.DWORD)
+_sig(k32.QueryFullProcessImageNameW, wt.BOOL, HANDLE, wt.DWORD, wt.LPWSTR, ctypes.POINTER(wt.DWORD))
+_sig(k32.CreateToolhelp32Snapshot, HANDLE, wt.DWORD, wt.DWORD)
+_sig(k32.Process32FirstW, wt.BOOL, HANDLE, ctypes.POINTER(PROCESSENTRY32W))
+_sig(k32.Process32NextW, wt.BOOL, HANDLE, ctypes.POINTER(PROCESSENTRY32W))
+_sig(dwmapi.DwmGetWindowAttribute, ctypes.c_long, HANDLE, wt.DWORD, ctypes.c_void_p, wt.DWORD)
+_sig(shell32.SHQueryUserNotificationState, ctypes.c_long, ctypes.POINTER(ctypes.c_int))
+_sig(version_dll.GetFileVersionInfoSizeW, wt.DWORD, wt.LPCWSTR, ctypes.POINTER(wt.DWORD))
+_sig(version_dll.GetFileVersionInfoW, wt.BOOL, wt.LPCWSTR, wt.DWORD, wt.DWORD, ctypes.c_void_p)
+_sig(version_dll.VerQueryValueW, wt.BOOL, ctypes.c_void_p, wt.LPCWSTR, ctypes.POINTER(ctypes.c_void_p),
+     ctypes.POINTER(wt.UINT))
+
+
+def app_key(name):
+    r"""'C:\Program Files\VLC\VLC.EXE' or 'vlc' -> 'vlc.exe'; '', '*' or 'any' -> '' (any app)."""
+    name = os.path.basename((name or "").strip().strip('"')).lower()
+    if name in ("", "*", "any"):
+        return ""
+    return name if name.endswith(".exe") else name + ".exe"
+
+
+def clean_rules(rules):
+    """Valid sync conditions only: {"app": "vlc.exe" ("" = any app), "when": one of WHEN,
+    "screen": "" (any), "leds" (the screen the LEDs follow) or a screen name, "name": what the app is called}."""
+    out = []
+    for r in rules if isinstance(rules, list) else []:
+        if not isinstance(r, dict):
+            continue
+        rule = {"app": app_key(r.get("app", "")), "when": r.get("when") if r.get("when") in WHEN else "foreground",
+                "screen": str(r.get("screen") or "")[:80]}
+        if rule["app"] and r.get("name"):
+            rule["name"] = str(r["name"])[:80]
+        if rule["app"] and r.get("path"):  # for the app's icon
+            rule["path"] = str(r["path"])[:400]
+        if rule["when"] == "running" and not rule["app"] and not rule["screen"]:
+            continue  # "any app is running": always true, says nothing
+        key = lambda d: (d["app"], d["when"], d["screen"])
+        if all(key(o) != key(rule) for o in out):
+            out.append(rule)
+    return out[:32]
+
+
+def process_path(pid):
+    h = k32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION: works for most apps, elevated too
+    if not h:
+        return ""
+    try:
+        buf, size = ctypes.create_unicode_buffer(1024), wt.DWORD(1024)
+        return buf.value if k32.QueryFullProcessImageNameW(h, 0, buf, byref(size)) else ""
+    finally:
+        k32.CloseHandle(h)
+
+
+def running_processes():
+    """pid -> exe name (lower case) of every running process."""
+    out = {}
+    snap = k32.CreateToolhelp32Snapshot(2, 0)  # TH32CS_SNAPPROCESS
+    if not snap or snap == INVALID_HANDLE:
+        return out
+    try:
+        e = PROCESSENTRY32W()
+        e.dwSize = sizeof(e)
+        ok = k32.Process32FirstW(snap, byref(e))
+        while ok:
+            out[e.th32ProcessID] = e.szExeFile.lower()
+            ok = k32.Process32NextW(snap, byref(e))
+    finally:
+        k32.CloseHandle(snap)
+    return out
+
+
+def app_description(path):
+    """An app's own name ("VLC media player") from its version information, else its file name without .exe."""
+    fallback = os.path.splitext(os.path.basename(path))[0]
+    try:
+        size = version_dll.GetFileVersionInfoSizeW(path, None)
+        if not size:
+            return fallback
+        data = ctypes.create_string_buffer(size)
+        if not version_dll.GetFileVersionInfoW(path, 0, size, data):
+            return fallback
+        ptr, n = ctypes.c_void_p(), wt.UINT()
+        langs = []
+        if version_dll.VerQueryValueW(data, "\\VarFileInfo\\Translation", byref(ptr), byref(n)) and n.value >= 4:
+            pairs = (ctypes.c_uint16 * (n.value // 2)).from_address(ptr.value)
+            langs = [(pairs[i], pairs[i + 1]) for i in range(0, len(pairs) - 1, 2)]
+        for lang, cp in langs + [(0x0409, 0x04B0), (0x0409, 0x04E4), (0x0000, 0x04B0)]:
+            key = f"\\StringFileInfo\\{lang:04x}{cp:04x}\\FileDescription"
+            if version_dll.VerQueryValueW(data, key, byref(ptr), byref(n)) and n.value > 1 and ptr.value:
+                text = ctypes.wstring_at(ptr.value).strip()
+                if text:
+                    return text[:60]
+    except (OSError, ValueError):
+        pass
+    return fallback
+
+
+def cloaked(hwnd):
+    """Windows hidden by DWM (other virtual desktops, suspended Store apps) count as not shown."""
+    v = wt.DWORD(0)
+    return dwmapi.DwmGetWindowAttribute(hwnd, 14, byref(v), 4) == 0 and v.value != 0  # DWMWA_CLOAKED
+
+
+class Foreground:
+    __slots__ = ("hwnd", "pid", "exe", "device", "fullscreen")
+
+
+class AppWatch:
+    """What sync conditions look at: the window in front, the running apps, the screens their windows are on.
+    Everything is cached briefly, so checking four times a second costs next to nothing."""
+
+    def __init__(self):
+        self._exe = {}  # pid -> (exe, when)
+        self._procs, self._procs_t = {}, -99.0
+        self._wins, self._wins_t = {}, -99.0
+
+    def exe_of(self, pid):
+        now = time.monotonic()
+        hit = self._exe.get(pid)
+        if hit and now - hit[1] < 10:
+            return hit[0]
+        exe = os.path.basename(process_path(pid)).lower() or self.processes().get(pid, "")
+        if len(self._exe) > 512:
+            self._exe.clear()
+        self._exe[pid] = (exe, now)
+        return exe
+
+    def processes(self):
+        """pid -> exe of every running process, refreshed every 2 seconds at most."""
+        now = time.monotonic()
+        if now - self._procs_t >= 2:
+            self._procs, self._procs_t = running_processes(), now
+        return self._procs
+
+    @staticmethod
+    def window_pid(hwnd):
+        pid = wt.DWORD()
+        user32.GetWindowThreadProcessId(hwnd, byref(pid))
+        return pid.value
+
+    def owner(self, hwnd):
+        """(pid, exe) of the app a window belongs to. Store apps live inside ApplicationFrameHost: look past it."""
+        pid = self.window_pid(hwnd)
+        exe = self.exe_of(pid)
+        if exe == "applicationframehost.exe":
+            inner = []
+
+            def cb(child, _):
+                p = self.window_pid(child)
+                if p != pid:
+                    inner.append(p)
+                    return False
+                return True
+
+            user32.EnumChildWindows(hwnd, WNDENUMPROC(cb), 0)
+            if inner:
+                pid, exe = inner[0], self.exe_of(inner[0]) or exe
+        return pid, exe
+
+    @staticmethod
+    def screen_of(hwnd):
+        """(device name, monitor rectangle) of the screen a window is on."""
+        mi = MONITORINFOEXW()
+        mi.cbSize = sizeof(mi)
+        hmon = user32.MonitorFromWindow(hwnd, 2)  # MONITOR_DEFAULTTONEAREST
+        if not hmon or not user32.GetMonitorInfoW(hmon, byref(mi)):
+            return "", None
+        return mi.szDevice, mi.rcMonitor
+
+    @staticmethod
+    def class_of(hwnd):
+        buf = ctypes.create_unicode_buffer(64)
+        user32.GetClassNameW(hwnd, buf, 64)
+        return buf.value
+
+    def foreground(self):
+        hwnd = user32.GetForegroundWindow()
+        if not hwnd:
+            return None
+        f = Foreground()
+        f.hwnd = hwnd
+        f.pid, f.exe = self.owner(hwnd)
+        f.device, mrc = self.screen_of(hwnd)
+        f.fullscreen = False
+        if mrc and self.class_of(hwnd) not in DESKTOP_CLASSES:
+            rc = wt.RECT()
+            user32.GetWindowRect(hwnd, byref(rc))
+            if rc.left <= mrc.left and rc.top <= mrc.top and rc.right >= mrc.right and rc.bottom >= mrc.bottom:
+                captioned = user32.GetWindowLongW(hwnd, -16) & 0x00C00000 == 0x00C00000  # WS_CAPTION
+                quns = ctypes.c_int(0)  # what Windows itself calls full screen (games, videos, presentations)
+                busy = shell32.SHQueryUserNotificationState(byref(quns)) == 0 and quns.value in (2, 3, 4)
+                f.fullscreen = not captioned or busy
+        return f
+
+    def windows(self):
+        """exe -> screens (device names) where the app shows a window, refreshed every second at most."""
+        now = time.monotonic()
+        if now - self._wins_t < 1:
+            return self._wins
+        found = {}
+
+        def cb(hwnd, _):
+            if user32.IsWindowVisible(hwnd) and not user32.IsIconic(hwnd) and not cloaked(hwnd) \
+                    and self.class_of(hwnd) not in DESKTOP_CLASSES:
+                _, exe = self.owner(hwnd)
+                device, _ = self.screen_of(hwnd)
+                if exe and device:
+                    found.setdefault(exe, set()).add(device)
+            return True
+
+        user32.EnumWindows(WNDENUMPROC(cb), 0)
+        self._wins, self._wins_t = found, now
+        return found
+
+    def open_apps(self):
+        """Apps with a window open now, for the app picker: [(exe, name, path)], sorted by name."""
+        own, seen, apps = os.getpid(), set(), []
+
+        def cb(hwnd, _):
+            if user32.IsWindowVisible(hwnd) and not user32.IsIconic(hwnd) and not cloaked(hwnd) \
+                    and not user32.GetWindow(hwnd, 4) and user32.GetWindowTextLengthW(hwnd) > 0 \
+                    and self.class_of(hwnd) not in DESKTOP_CLASSES:  # GW_OWNER: top windows only, with a title
+                pid, exe = self.owner(hwnd)
+                if exe and exe not in seen and pid != own and exe not in ("applicationframehost.exe", "textinputhost.exe"):
+                    seen.add(exe)
+                    path = process_path(pid)
+                    apps.append((exe, app_description(path) if path else exe[:-4], path))
+            return True
+
+        user32.EnumWindows(WNDENUMPROC(cb), 0)
+        return sorted(apps, key=lambda a: a[1].lower())
+
+
+_sig(user32.GetWindow, HANDLE, HANDLE, wt.UINT)
+
+
+def screen_devices(screen, leds, monitors):
+    r"""Device names (\\.\DISPLAYn) a condition's screen stands for; None = any screen."""
+    if not screen:
+        return None
+    if screen == "leds":
+        return set(leds)
+    c = _norm(screen)
+    return {m.device for m in monitors if c and (c == _norm(m.device) or c == _norm(m.name) or c in _norm(m.name + m.pnp))}
+
+
+def conditions_met(rules, leds, monitors, watch):
+    """The first sync condition that holds now, or None. (No conditions at all: Glowback always follows the screen.)"""
+    fg = None
+    for r in rules:
+        app, screens = r["app"], screen_devices(r["screen"], leds, monitors)
+        if r["when"] == "running":
+            if screens is None:
+                ok = app in watch.processes().values()
+            else:
+                ok = any(devices & screens for exe, devices in watch.windows().items() if not app or exe == app)
+        else:
+            fg = fg or watch.foreground()
+            ok = (fg is not None and (not app or fg.exe == app) and (screens is None or fg.device in screens)
+                  and (r["when"] == "foreground" or fg.fullscreen))
+        if ok:
+            return r
+    return None
+
+
+def parse_rule(text, monitors=()):
+    """Command line form WHEN:APP[@SCREEN] -> a condition, e.g. foreground:vlc.exe, fullscreen:*@leds, running:steam."""
+    when, _, rest = text.partition(":")
+    when = {"front": "foreground", "full": "fullscreen", "run": "running"}.get(when.strip().lower(), when.strip().lower())
+    if when not in WHEN or not rest.strip():
+        raise ValueError(text)
+    app, _, screen = rest.partition("@")
+    screen = screen.strip()
+    if screen.lower() in ("leds", "led", "glowback"):
+        screen = "leds"
+    elif screen.isdigit():  # a number from glowback --list: kept as the screen's name, which survives reboots
+        m = next((m for m in monitors if m.index == int(screen)), None)
+        if m is None:
+            raise ValueError(text)
+        screen = m.name or m.device
+    rules = clean_rules([{"app": app, "when": when, "screen": screen}])
+    if not rules:
+        raise ValueError(text)
+    return rules[0]
+
+
+def cmd_sync_when(values):
+    """glowback --sync-when WHEN:APP[@SCREEN] ... (or always): saved; a running Glowback follows within 2 seconds."""
+    usage = ("usage: glowback --sync-when WHEN:APP[@SCREEN] [--sync-when ...]   or   --sync-when always\n"
+             "  WHEN: running, foreground or fullscreen; APP: an .exe name or * for any app;\n"
+             "  SCREEN: leds (the screen the LEDs follow), a number from --list, or a screen name")
+    if any(v.strip().lower() in ("always", "off", "none") for v in values):
+        save_settings({"sync_when": []})
+        print("Glowback follows the screen all the time.")
+        return
+    monitors = list_monitors()
+    try:
+        rules = clean_rules([parse_rule(v, monitors) for v in values])
+    except ValueError as e:
+        sys.exit(f"Not understood: {e}\n{usage}")
+    save_settings({"sync_when": rules})
+    print("Glowback follows the screen only while one of these holds:")
+    for r in rules:
+        where = {"": "", "leds": " on the LED screen"}.get(r["screen"], f" on screen {r['screen']}")
+        print(f"  {r['app'] or 'any app'} {dict(running='is running', foreground='is in front', fullscreen='is full screen')[r['when']]}{where}")
+
+
 class Tray:
     """Notification-area icon: pause/resume, mode, brightness, start with Windows, quit."""
     WM_TRAY, WM_CLOSE_APP, WM_UPDATE, WM_CHECKED = 0x8001, 0x8002, 0x8003, 0x8004
     WM_HA, WM_HA_INSTALL = 0x8005, 0x8006  # posted by the Home Assistant thread
+    WM_OPEN_APP, WM_SYNC = 0x8007, 0x8008  # Glowback launched again; something shown changed (any thread)
 
     def __init__(self, state, stop, argv):
         self.state, self.stop, self.argv = state, stop, argv
         self.worker = None
+        self.app = None  # the app window, made the first time it opens
         on, off = ensure_icons()
         self.icon_path = on
         self.painter, self.items = None, []
@@ -2782,8 +3607,9 @@ class Tray:
         n = NOTIFYICONDATAW()
         n.cbSize, n.hWnd, n.uID, n.uCallbackMessage = sizeof(n), self.hwnd, 1, self.WM_TRAY
         n.uFlags = 0x1 | 0x2 | 0x4  # MESSAGE | ICON | TIP
-        n.hIcon = self.icons[0 if self.state.enabled else 1]
-        n.szTip = tr("tip_on") if self.state.enabled else tr("tip_off")
+        s = self.state
+        n.hIcon = self.icons[0 if s.enabled and not s.waiting else 1]
+        n.szTip = tr("tip_off") if not s.enabled else tr("tip_waiting") if s.waiting else tr("tip_on")
         if info:
             n.uFlags |= 0x10  # NIF_INFO
             n.szInfoTitle, n.szInfo = info
@@ -2837,33 +3663,66 @@ class Tray:
         if self.ha:
             self.ha.reconfigure()
 
+    def open_app(self, page=None):
+        """Glowback's window, on a page; the panel closes."""
+        if self.flyout and user32.IsWindow(self.flyout):
+            user32.PostMessageW(self.flyout, 0x0010, 0, 0)  # WM_CLOSE
+        if not self.app:
+            self.app = AppWindow(self)
+        self.app.open(page)
+
+    def app_closed(self):
+        """The window closed: Glowback keeps running. Said once, the first time."""
+        if not load_settings().get("told_background"):
+            save_settings({"told_background": True})
+            self.refresh(("Glowback", tr("app_background")))
+
+    def _changed(self):
+        """Something the panel or the window shows changed: redraw them."""
+        if self.flyout and self.painter:
+            user32.InvalidateRect(self.flyout, None, False)
+        if self.app:
+            self.app.invalidate()
+
     def _proc(self, hwnd, msg, wparam, lparam):
         if msg == self.WM_TRAY:
             event = lparam & 0xFFFF
             if event in (0x0202, 0x0205, 0x007B):  # left/right click, context menu
                 self._menu()
+            elif event == 0x0203:  # double click: the app
+                self.open_app()
             elif event == 0x0405 and self.balloon == "update":  # NIN_BALLOONUSERCLICK
                 self.start_update()
+            return 0
+        if msg == self.WM_OPEN_APP:  # Glowback launched again (Start menu...): show this one's window
+            self.open_app()
+            return 0
+        if msg == self.WM_SYNC:  # paused, resumed, waiting for a condition...: icon, panel, window
+            self.refresh()
+            self._changed()
             return 0
         if msg == self.WM_UPDATE:  # posted by the update checker thread
             self.balloon = "update"
             self.refresh((tr("update_title", version=self.state.new_version), tr("update_text")))
             if self.flyout and self.painter:
                 self._fit_flyout()
+            if self.app:
+                self.app.invalidate()
             return 0
         if msg == self.WM_CHECKED:  # posted by check_now() once GitHub answered
             self.checking, self.check_time = False, time.monotonic()
             if self.flyout and self.painter:
                 user32.KillTimer(self.flyout, 1)
                 self._fit_flyout()  # a new version adds the "Update to" row
-            elif self.check_result == "found":
+            elif self.check_result == "found" and not (self.app and self.app.hwnd):
                 self.balloon = "update"
                 self.refresh((tr("update_title", version=self.state.new_version), tr("update_text")))
+            if self.app:
+                self.app.invalidate()
             return 0
         if msg == self.WM_HA:  # Home Assistant changed a setting, or its connection status changed
             self.refresh()
-            if self.flyout and self.painter:
-                user32.InvalidateRect(self.flyout, None, False)
+            self._changed()
             return 0
         if msg == self.WM_HA_INSTALL:  # "Install" on Glowback's update entity in Home Assistant
             if getattr(self.state, "update_info", None):
@@ -2911,6 +3770,8 @@ class Tray:
         s = self.state
         if not s.enabled:
             status, dot = tr("state_paused"), "off"
+        elif s.waiting:
+            status, dot = tr("state_waiting"), "none"
         elif s.leds:
             status, dot = tr("state_on", leds=s.leds), "on"
         else:
@@ -2919,8 +3780,11 @@ class Tray:
         if s.new_version:
             items.append(dict(kind="action", id=25, icon="sync", text=tr("update_to", version=s.new_version),
                               accent=True, highlight=True, link=True))
-        items += [dict(kind="sep"),
+        items += [dict(kind="action", id=29, icon="window", text=tr("open_app")),
+                  dict(kind="sep"),
                   dict(kind="toggle", id=1, icon="light", text=tr("ambilight"), on=s.enabled),
+                  dict(kind="action", id=28, icon="filter", text=tr("sync_when"), status=self._sync_status(),
+                       statuses=(tr("sync_always"), tr("sync_many", n=12))),
                   dict(kind="toggle", id=20, icon="power", text=tr("start_windows"), on=self.autostart),
                   dict(kind="action", id=27, icon="home", text="Home Assistant", status=Tray._ha_status(self),
                        statuses=(tr("ha_setup"), tr("ha_connected"), tr("ha_connecting"), tr("ha_error"))),
@@ -2942,6 +3806,16 @@ class Tray:
             if i == self.hover:
                 it["hover_seg"] = self.hover_seg
         return items
+
+    def _sync_status(self):
+        """Right side of the "When to sync" row: (text, colour, glyph)."""
+        s = self.state
+        if not s.rules:
+            return tr("sync_always"), MenuPainter.MUTED, None
+        text = tr("sync_one") if len(s.rules) == 1 else tr("sync_many", n=len(s.rules))
+        if not s.enabled:
+            return text, MenuPainter.MUTED, None
+        return (text, MenuPainter.AMBER, "clock") if s.waiting else (text, MenuPainter.GREEN, "check")
 
     def _ha_status(self):
         """Right side of the Home Assistant row: (text, colour, glyph)."""
@@ -3128,7 +4002,11 @@ class Tray:
             elif cid == 25:
                 self.start_update()
             elif cid == 27:
-                self.ha_window()
+                self.open_app("home")
+            elif cid == 28:
+                self.open_app("sync")
+            elif cid == 29:
+                self.open_app()
             elif cid == 99:
                 k32.SetEvent(self.stop.h)
             return
@@ -3302,6 +4180,7 @@ def run_with_tray(args, stop, state, argv):
         return run(args, stop, state)
     tray.ha = HomeAssistant(state, stop, notify=lambda: user32.PostMessageW(tray.hwnd, Tray.WM_HA, 0, 0),
                             install=lambda: user32.PostMessageW(tray.hwnd, Tray.WM_HA_INSTALL, 0, 0)).start()
+    state.notify = lambda: user32.PostMessageW(tray.hwnd, Tray.WM_SYNC, 0, 0)
     worker_error = []
 
     def worker():
@@ -3318,9 +4197,8 @@ def run_with_tray(args, stop, state, argv):
     t.start()
     threading.Thread(target=update_checker, name="glowback-update", daemon=True,
                      args=(state, stop, lambda: user32.PostMessageW(tray.hwnd, Tray.WM_UPDATE, 0, 0))).start()
-    if not args.from_autostart:
-        tray.balloon = "welcome"
-        tray.refresh((tr("balloon_title"), tr("balloon_text")))
+    if not (args.from_autostart or args.after_update):  # by hand (Start menu, installer): the window. At sign-in
+        tray.open_app()  # or after an update (maybe started from Home Assistant): in the background
     tray.loop()
     k32.SetEvent(stop.h)
     t.join(5)
@@ -4122,6 +5000,1212 @@ class HomeAssistantDialog:
 
 
 # =============================================================================
+# The app: Glowback's window. Ambient light (with a live preview of the LEDs), When to sync, Home Assistant,
+# Settings, About. Closing it leaves Glowback running in the background, behind its icon next to the clock.
+# =============================================================================
+class MINMAXINFO(ctypes.Structure):
+    _fields_ = [("ptReserved", wt.POINT), ("ptMaxSize", wt.POINT), ("ptMaxPosition", wt.POINT),
+                ("ptMinTrackSize", wt.POINT), ("ptMaxTrackSize", wt.POINT)]
+
+
+class OPENFILENAMEW(ctypes.Structure):
+    _fields_ = [("lStructSize", wt.DWORD), ("hwndOwner", HANDLE), ("hInstance", HANDLE), ("lpstrFilter", wt.LPCWSTR),
+                ("lpstrCustomFilter", wt.LPWSTR), ("nMaxCustFilter", wt.DWORD), ("nFilterIndex", wt.DWORD),
+                ("lpstrFile", wt.LPWSTR), ("nMaxFile", wt.DWORD), ("lpstrFileTitle", wt.LPWSTR),
+                ("nMaxFileTitle", wt.DWORD), ("lpstrInitialDir", wt.LPCWSTR), ("lpstrTitle", wt.LPCWSTR),
+                ("Flags", wt.DWORD), ("nFileOffset", wt.WORD), ("nFileExtension", wt.WORD), ("lpstrDefExt", wt.LPCWSTR),
+                ("lCustData", wt.LPARAM), ("lpfnHook", ctypes.c_void_p), ("lpTemplateName", wt.LPCWSTR),
+                ("pvReserved", ctypes.c_void_p), ("dwReserved", wt.DWORD), ("FlagsEx", wt.DWORD)]
+
+
+comdlg32 = ctypes.WinDLL("comdlg32")
+_sig(comdlg32.GetOpenFileNameW, wt.BOOL, ctypes.POINTER(OPENFILENAMEW))
+_sig(user32.SetCapture, HANDLE, HANDLE)
+_sig(user32.ReleaseCapture, wt.BOOL)
+_sig(user32.GetKeyState, ctypes.c_short, ctypes.c_int)
+_sig(user32.FindWindowW, HANDLE, wt.LPCWSTR, wt.LPCWSTR)
+_sig(user32.ClientToScreen, wt.BOOL, HANDLE, ctypes.POINTER(wt.POINT))
+_sig(user32.AllowSetForegroundWindow, wt.BOOL, wt.DWORD)
+_sig(user32.PrivateExtractIconsW, wt.UINT, wt.LPCWSTR, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.POINTER(HANDLE),
+     ctypes.POINTER(wt.UINT), wt.UINT, wt.UINT)
+_sig(gdiplus.GdipAddPathEllipse, ctypes.c_int, VP, F, F, F, F)
+_sig(gdiplus.GdipCreatePathGradientFromPath, ctypes.c_int, VP, PVP)
+_sig(gdiplus.GdipSetPathGradientCenterColor, ctypes.c_int, VP, ctypes.c_uint32)
+_sig(gdiplus.GdipSetPathGradientSurroundColorsWithCount, ctypes.c_int, VP, ctypes.POINTER(ctypes.c_uint32),
+     ctypes.POINTER(ctypes.c_int))
+_sig(gdiplus.GdipSetPathGradientSigmaBlend, ctypes.c_int, VP, F, F)
+_sig(gdiplus.GdipDrawPath, ctypes.c_int, VP, VP, VP)
+_sig(gdiplus.GdipSetClipPath, ctypes.c_int, VP, VP, ctypes.c_int)
+_sig(gdiplus.GdipResetClip, ctypes.c_int, VP)
+
+
+def pick_program(owner):
+    """The Windows "Open" dialog, for a program that is not running now: its full path, or ''."""
+    buf = ctypes.create_unicode_buffer(1024)
+    filt = ctypes.create_unicode_buffer(f"{tr('sync_programs')} (*.exe)\0*.exe\0\0")
+    o = OPENFILENAMEW()
+    o.lStructSize, o.hwndOwner = sizeof(o), owner
+    o.lpstrFilter = ctypes.cast(filt, wt.LPCWSTR)
+    o.lpstrFile, o.nMaxFile = ctypes.cast(buf, wt.LPWSTR), len(buf)
+    o.lpstrInitialDir = os.environ.get("ProgramFiles", "C:\\")
+    o.Flags = 0x00080000 | 0x00001000 | 0x00000800 | 0x00000008  # EXPLORER, FILEMUSTEXIST, PATHMUSTEXIST, NOCHANGEDIR
+    return buf.value if comdlg32.GetOpenFileNameW(byref(o)) else ""
+
+
+class Gfx:
+    """GDI+ with alpha on a device context: rounded fills and outlines, circles, soft glows, clipping."""
+
+    def __init__(self, hdc):
+        self.g = VP()
+        self.ok = bool(_gdip_start()) and gdiplus.GdipCreateFromHDC(hdc, byref(self.g)) == 0
+        if self.ok:
+            gdiplus.GdipSetSmoothingMode(self.g, 4)  # antialiased
+            gdiplus.GdipSetPixelOffsetMode(self.g, 4)
+
+    def close(self):
+        if self.ok:
+            gdiplus.GdipDeleteGraphics(self.g)
+            self.ok = False
+
+    @staticmethod
+    def argb(color, alpha=255):
+        return ((int(alpha) & 0xFF) << 24) | (color & 0xFFFFFF)
+
+    @staticmethod
+    def round_path(x, y, w, h, r):
+        path = VP()
+        gdiplus.GdipCreatePath(0, byref(path))
+        d = max(0.5, min(2.0 * r, w, h))
+        gdiplus.GdipAddPathArc(path, x, y, d, d, 180, 90)
+        gdiplus.GdipAddPathArc(path, x + w - d, y, d, d, 270, 90)
+        gdiplus.GdipAddPathArc(path, x + w - d, y + h - d, d, d, 0, 90)
+        gdiplus.GdipAddPathArc(path, x, y + h - d, d, d, 90, 90)
+        gdiplus.GdipClosePathFigure(path)
+        return path
+
+    def draw(self, shape):
+        if not self.ok:
+            return
+        kind = shape[0]
+        if kind in ("round", "circle"):  # ("round", color, x, y, w, h, radius[, alpha]) / ("circle", color, x, y, d[, alpha])
+            if kind == "round":
+                _, color, x, y, w, h, r, *a = shape
+            else:
+                _, color, x, y, w, *a = shape
+                h, r = w, w / 2
+            if w <= 0 or h <= 0:
+                return
+            brush = VP()
+            gdiplus.GdipCreateSolidFill(self.argb(color, a[0] if a else 255), byref(brush))
+            if kind == "circle":
+                gdiplus.GdipFillEllipse(self.g, brush, x, y, w, h)
+            else:
+                path = self.round_path(x, y, w, h, r)
+                gdiplus.GdipFillPath(self.g, brush, path)
+                gdiplus.GdipDeletePath(path)
+            gdiplus.GdipDeleteBrush(brush)
+        elif kind == "outline":  # ("outline", color, x, y, w, h, radius, width[, alpha])
+            _, color, x, y, w, h, r, width, *a = shape
+            pen = VP()
+            gdiplus.GdipCreatePen1(self.argb(color, a[0] if a else 255), width, 2, byref(pen))  # UnitPixel
+            half = width / 2
+            path = self.round_path(x + half, y + half, w - width, h - width, max(0.5, r - half))
+            gdiplus.GdipDrawPath(self.g, pen, path)
+            gdiplus.GdipDeletePath(path)
+            gdiplus.GdipDeletePen(pen)
+        elif kind == "glow":  # ("glow", color, cx, cy, rx, ry, alpha): light that fades out, like on a wall
+            _, color, cx, cy, rx, ry, alpha = shape
+            path, brush = VP(), VP()
+            gdiplus.GdipCreatePath(0, byref(path))
+            gdiplus.GdipAddPathEllipse(path, cx - rx, cy - ry, 2 * rx, 2 * ry)
+            if gdiplus.GdipCreatePathGradientFromPath(path, byref(brush)) == 0:
+                gdiplus.GdipSetPathGradientCenterColor(brush, self.argb(color, alpha))
+                edge, n = ctypes.c_uint32(self.argb(color, 0)), ctypes.c_int(1)
+                gdiplus.GdipSetPathGradientSurroundColorsWithCount(brush, byref(edge), byref(n))
+                gdiplus.GdipSetPathGradientSigmaBlend(brush, 1.0, 1.0)
+                gdiplus.GdipFillPath(self.g, brush, path)
+                gdiplus.GdipDeleteBrush(brush)
+            gdiplus.GdipDeletePath(path)
+        elif kind == "arc":  # ("arc", color, x, y, d, start, sweep, width): loaders
+            _, color, x, y, d, start, sweep, width = shape
+            pen = VP()
+            gdiplus.GdipCreatePen1(self.argb(color), width, 2, byref(pen))
+            gdiplus.GdipSetPenStartCap(pen, 2)
+            gdiplus.GdipSetPenEndCap(pen, 2)
+            gdiplus.GdipDrawArc(self.g, pen, x, y, d, d, start, sweep)
+            gdiplus.GdipDeletePen(pen)
+        elif kind == "clip":  # ("clip", x, y, w, h, radius): what follows stays inside
+            _, x, y, w, h, r = shape
+            path = self.round_path(x, y, w, h, r)
+            gdiplus.GdipSetClipPath(self.g, path, 0)  # CombineModeReplace
+            gdiplus.GdipDeletePath(path)
+        elif kind == "unclip":
+            gdiplus.GdipResetClip(self.g)
+
+
+class AppWindow:
+    """Glowback's window: a sidebar of pages, drawn from display lists rebuilt on every paint, so it always shows
+    the current state. Widgets registered while composing a page serve the mouse, the keyboard and focus."""
+    PAGES = (("light", "light", "nav_light"), ("sync", "filter", "sync_when"), ("home", "home", "nav_home"),
+             ("settings", "settings", "nav_settings"), ("about", "info", "nav_about"))
+    BG, CARD, LINE, HOVER, SELECT = 0x121317, 0x1A1B21, 0x24262E, 0x212329, 0x1F2129
+    FIELD, FIELD_LINE = 0x0F1013, 0x2E3140
+    SIZE, MIN = (1040, 790), (820, 560)  # at 100 %
+    LANG_NAMES = (("", None), ("en", "English"), ("fr", "Français"), ("es", "Español"), ("de", "Deutsch"),
+                  ("it", "Italiano"), ("pt", "Português (Brasil)"))
+    SITE_URL = "https://ilyomix.github.io/glowback/"
+
+    def __init__(self, tray):
+        self.tray, self.state = tray, tray.state
+        self.hwnd = self.painter = self.icon = self.icon_big = None
+        self.k, self.fonts, self.size = 1.0, {}, (0, 0)
+        self.page, self.scroll, self.max_scroll = "light", 0, 0
+        self.widgets, self.side, self.content = [], ([], []), ([], [])
+        self.hover = self.pressed = self.focus = self.drag = None
+        self.focus_visible = self.tracking = False
+        self.app_icons, self.menu_items, self.mons, self.mons_t = {}, [], [], -99.0
+        self.draft = dict(app="", name="", path="", when="foreground", screen="")  # the condition being added
+        self.sw = self.cx0 = self.cx1 = 0
+        self._ref = WNDPROC(self._proc)
+        self.cls = f"GlowbackApp{id(self)}"  # a class per object: each keeps its own window procedure
+        wc = WNDCLASSEXW()
+        wc.cbSize, wc.lpfnWndProc, wc.hInstance, wc.lpszClassName = sizeof(wc), self._ref, k32.GetModuleHandleW(None), self.cls
+        wc.hCursor = user32.LoadCursorW(None, ctypes.c_void_p(32512))  # IDC_ARROW
+        icon = ensure_icons()[0]
+        wc.hIcon = user32.LoadImageW(None, icon, 1, 48, 48, 0x10)
+        wc.hIconSm = user32.LoadImageW(None, icon, 1, 16, 16, 0x10)
+        user32.RegisterClassExW(byref(wc))
+
+    # ---- scale, fonts, opening and closing
+    def px(self, v):
+        return round(v * self.k)
+
+    def set_scale(self, k):
+        self._free_gdi()
+        self.k = k
+        self.painter = MenuPainter(k, None)
+        face, glyphs = ui_font_face(), icon_font_face()
+        mk = lambda size, weight, f=face: gdi32.CreateFontW(-round(size * k), 0, 0, 0, weight, 0, 0, 0, 1, 0, 0, 5, 0, f)
+        self.fonts = dict(page=mk(26, 600), h2=mk(15, 600), nav=mk(14, 400), body=mk(14, 400), button=mk(13.5, 600),
+                          name=mk(17, 600), hero=mk(30, 600), icon=mk(18, 400, glyphs), icon_s=mk(14, 400, glyphs),
+                          icon_l=mk(22, 400, glyphs))
+        path = ensure_icons()[0]
+        self.icon = user32.LoadImageW(None, path, 1, self.px(32), self.px(32), 0x10)
+        self.icon_big = user32.LoadImageW(None, path, 1, self.px(72), self.px(72), 0x10)
+
+    def _free_gdi(self):
+        for f in self.fonts.values():
+            gdi32.DeleteObject(f)
+        self.fonts = {}
+        if self.painter:
+            self.painter.close()
+            self.painter = None
+        for h in [self.icon, self.icon_big] + list(self.app_icons.values()):
+            if h:
+                user32.DestroyIcon(h)
+        self.icon = self.icon_big = None
+        self.app_icons = {}
+
+    def open(self, page=None):
+        if page:
+            self.page, self.scroll = page, 0
+        if page == "settings" or not self.hwnd:
+            self.tray.autostart = autostart_enabled()
+        if self.hwnd and user32.IsWindow(self.hwnd):
+            user32.ShowWindow(self.hwnd, 9 if user32.IsIconic(self.hwnd) else 5)  # SW_RESTORE, SW_SHOW
+            user32.SetForegroundWindow(self.hwnd)
+            self._timers()
+            self.invalidate()
+            return
+        pt = wt.POINT()
+        user32.GetCursorPos(byref(pt))
+        mon = user32.MonitorFromPoint(pt, 2)
+        dpi_x, dpi_y = wt.UINT(96), wt.UINT(96)
+        if shcore:
+            shcore.GetDpiForMonitor(mon, 0, byref(dpi_x), byref(dpi_y))
+        self.set_scale(dpi_x.value / 96.0)
+        mi = MONITORINFOEXW()
+        mi.cbSize = sizeof(mi)
+        user32.GetMonitorInfoW(mon, byref(mi))
+        work = mi.rcWork
+        w = min(self.px(self.SIZE[0]), work.right - work.left - self.px(32))
+        h = min(self.px(self.SIZE[1]), work.bottom - work.top - self.px(32))
+        x, y = work.left + (work.right - work.left - w) // 2, work.top + (work.bottom - work.top - h) // 2
+        self.hwnd = user32.CreateWindowExW(0, self.cls, "Glowback", 0x00CF0000, x, y, w, h, None, None,
+                                           k32.GetModuleHandleW(None), None)  # WS_OVERLAPPEDWINDOW
+        if not self.hwnd:
+            self._free_gdi()
+            return
+        for attr, value in ((20, 1), (35, _cref(self.BG)), (34, _cref(0x2C2E38))):  # dark, caption, border colours
+            v = wt.DWORD(value)
+            dwmapi.DwmSetWindowAttribute(self.hwnd, attr, byref(v), 4)
+        user32.ShowWindow(self.hwnd, 5)
+        user32.SetForegroundWindow(self.hwnd)
+        self._timers()
+
+    def invalidate(self):
+        if self.hwnd:
+            user32.InvalidateRect(self.hwnd, None, False)
+
+    def _timers(self):
+        if not self.hwnd:
+            return
+        if self.page == "light" and not user32.IsIconic(self.hwnd):
+            user32.SetTimer(self.hwnd, 1, 40, None)  # live preview, 25 frames a second
+        else:
+            user32.KillTimer(self.hwnd, 1)
+        user32.SetTimer(self.hwnd, 2, 1000, None)  # LED count, Home Assistant status...
+        if self.tray.checking:
+            user32.SetTimer(self.hwnd, 3, 33, None)  # the update check's loader
+
+    # ---- display lists
+    def S(self, *shape, side=False):
+        (self.side if side else self.content)[0].append(shape)
+
+    def T(self, text, font, color, l, t, r, b, flags=0, side=False):
+        (self.side if side else self.content)[1].append(("text", text, font, color, l, t, r, b, flags))
+
+    def W(self, text, font, color, l, t, r, b):
+        self.content[1].append(("wrap", text, font, color, l, t, r, b))
+
+    def I(self, hicon, x, y, size, side=False):
+        (self.side if side else self.content)[1].append(("icon", hicon, x, y, size))
+
+    def add(self, wid, kind, rect, side=False, focus=True, **kw):
+        self.widgets.append(dict(id=wid, kind=kind, rect=tuple(int(v) for v in rect), side=side, focus=focus, **kw))
+
+    def tw(self, text, font):
+        return self.painter.text_width(text, font)
+
+    def wrap_h(self, text, font, width):
+        rc = wt.RECT(0, 0, int(width), 0)
+        gdi32.SelectObject(self.painter.mdc, font)
+        user32.DrawTextW(self.painter.mdc, text, -1, byref(rc), 0x10 | 0x400 | 0x800)  # WORDBREAK|CALCRECT|NOPREFIX
+        return rc.bottom
+
+    # ---- building blocks
+    def _status(self):
+        s = self.state
+        if not s.enabled:
+            return tr("state_paused"), MenuPainter.OFF + 0x202020
+        if s.waiting:
+            return tr("state_waiting"), MenuPainter.AMBER
+        if s.leds:
+            return tr("state_on", leds=s.leds), MenuPainter.GREEN
+        return tr("state_none"), MenuPainter.AMBER
+
+    def _nav(self, wid, x, y, w, icon, text, selected, quiet=False):
+        p, h, ic = self.px, self.px(38), MenuPainter.ICONS
+        hov = self.hover == wid
+        if selected:
+            self.S("round", self.SELECT, x, y, w, h, p(7), side=True)
+            self.S("round", MenuPainter.ACCENT, x + p(1), y + h / 2 - p(8), p(3), p(16), p(1.5), side=True)
+        elif hov:
+            self.S("round", 0x1B1C22, x, y, w, h, p(7), side=True)
+        color = MenuPainter.MUTED if quiet and not hov else MenuPainter.TEXT
+        glyph = MenuPainter.LABEL if selected else (color if quiet else MenuPainter.ICON)
+        self.T(ic[icon], self.fonts["icon"], glyph, x + p(10), y, x + p(40), y + h, 0x1, side=True)
+        self.T(text, self.fonts["nav"], color, x + p(48), y, x + w - p(8), y + h, 0x8000, side=True)
+        self.add(wid, "nav", (x, y, x + w, y + h), side=True, radius=p(7))
+
+    def _card(self, y, h, x0=None, x1=None):
+        p = self.px
+        x0 = self.cx0 if x0 is None else x0
+        x1 = self.cx1 if x1 is None else x1
+        self.S("round", self.CARD, x0, y, x1 - x0, h, p(10))
+        self.S("outline", self.LINE, x0, y, x1 - x0, h, p(10), max(1.0, self.k))
+
+    def _sep(self, y):
+        self.S("round", self.LINE, self.cx0 + self.px(16), y, self.cx1 - self.cx0 - self.px(32), max(1, self.px(1)), 0)
+
+    def _row_hover(self, wid, y, h):
+        if self.hover == wid:
+            p = self.px
+            self.S("round", self.HOVER, self.cx0 + p(4), y + p(4), self.cx1 - self.cx0 - p(8), h - p(8), p(7))
+
+    def _header(self, y, title, sub=None):
+        p = self.px
+        self.T(title, self.fonts["page"], MenuPainter.TEXT, self.cx0, y, self.cx1, y + p(40))
+        y += p(44)
+        if sub:
+            h = self.wrap_h(sub, self.fonts["body"], self.cx1 - self.cx0)
+            self.W(sub, self.fonts["body"], MenuPainter.MUTED, self.cx0, y, self.cx1, y + h)
+            y += h
+        return y + p(24)
+
+    def _label(self, y, text):
+        p = self.px
+        self.T(text.upper(), self.painter.f_label, MenuPainter.LABEL, self.cx0 + p(4), y, self.cx1, y + p(18))
+        return y + p(26)
+
+    def _row_text(self, y, h, icon, title, desc=None, right=None, icon_color=None, hicon=None, desc_color=None):
+        p, ic = self.px, MenuPainter.ICONS
+        x = self.cx0 + p(20)
+        if hicon:
+            self.I(hicon, x, y + (h - p(28)) / 2, p(28))
+            x += p(44)
+        elif icon:
+            self.T(ic[icon], self.fonts["icon"], icon_color or MenuPainter.ICON, x, y, x + p(24), y + h, 0x1)
+            x += p(42)
+        r = self.cx1 - p(20) if right is None else right
+        if desc:
+            self.T(title, self.fonts["body"], MenuPainter.TEXT, x, y + p(10), r, y + h / 2 + p(2), 0x8000)
+            self.T(desc, self.painter.f_small, desc_color or MenuPainter.MUTED, x, y + h / 2 + p(1), r, y + h - p(9), 0x8000)
+        else:
+            self.T(title, self.fonts["body"], MenuPainter.TEXT, x, y, r, y + h, 0x8000)
+
+    def _toggle(self, wid, x, y, on, row=None):
+        p = self.px
+        w, h = p(42), p(22)
+        hov = self.hover == wid
+        if on:
+            self.S("round", 0x9A80FF if hov else MenuPainter.ACCENT, x, y, w, h, h / 2)
+            d = h - p(8)
+            self.S("circle", 0xFFFFFF, x + w - d - p(4), y + p(4), d)
+        else:
+            edge = 0xC5C9D4 if hov else 0x8C91A1
+            self.S("outline", edge, x, y, w, h, h / 2, max(1.0, self.k * 1.2))
+            d = h - p(10)
+            self.S("circle", edge, x + p(5), y + p(5), d)
+        self.add(wid, "toggle", (x, y, x + w, y + h), radius=h / 2)
+        if row:  # the whole row switches it too
+            self.add(wid, "toggle", row, focus=False)
+
+    def _button(self, wid, right, y, text, style="secondary", icon=None, busy=False, h=None):
+        """A button right-aligned on `right`; returns its left edge."""
+        p, ic = self.px, MenuPainter.ICONS
+        h = h or p(34)
+        f = self.fonts["button"]
+        w = self.tw(text, f) + p(30) + (p(24) if icon or busy else 0)
+        x = right - w
+        hov, prs = self.hover == wid, self.pressed == wid
+        if style == "primary":
+            fill, color = (0x7558F0 if prs else 0x9A80FF if hov else MenuPainter.ACCENT), 0xFFFFFF
+        elif style == "quiet":
+            fill, color = (0x25272F if prs else 0x202229 if hov else None), (MenuPainter.TEXT if hov else MenuPainter.ICON)
+        else:
+            fill, color = (0x23252D if prs else 0x2E303A if hov else 0x272932), MenuPainter.TEXT
+        if fill is not None:
+            self.S("round", fill, x, y, w, h, p(7))
+        if style == "secondary":
+            self.S("outline", 0x363843, x, y, w, h, p(7), max(1.0, self.k))
+        tx = x + p(15)
+        if busy:
+            d, width, now = p(14), max(1.5, self.k * 1.8), time.monotonic()
+            sweep = 40 + 230 * (0.5 - 0.5 * math.cos(now * 2 * math.pi / 1.6))
+            self.S("arc", MenuPainter.LINE, tx, y + (h - d) / 2, d, 0, 360, width)
+            self.S("arc", MenuPainter.ACCENT, tx, y + (h - d) / 2, d, (now * 320) % 360, sweep, width)
+            tx += p(24)
+        elif icon:
+            self.T(ic[icon], self.fonts["icon_s"], color, tx, y, tx + p(16), y + h, 0x1)
+            tx += p(24)
+        self.T(text, f, color, tx, y, x + w - p(12), y + h)
+        self.add(wid, "button", (x, y, x + w, y + h), radius=p(7))
+        return x
+
+    def _picker(self, wid, x, y, w, text, hicon=None, glyph=None):
+        p, h, ic = self.px, self.px(36), MenuPainter.ICONS
+        hov = self.hover == wid
+        self.S("round", self.FIELD, x, y, w, h, p(7))
+        self.S("outline", 0x4A4E5E if hov else self.FIELD_LINE, x, y, w, h, p(7), max(1.0, self.k))
+        tx = x + p(12)
+        if hicon:
+            self.I(hicon, tx, y + (h - p(20)) / 2, p(20))
+            tx += p(28)
+        elif glyph:
+            self.T(ic[glyph], self.fonts["icon_s"], MenuPainter.ICON, tx, y, tx + p(18), y + h, 0x1)
+            tx += p(26)
+        self.T(text, self.fonts["body"], MenuPainter.TEXT, tx, y, x + w - p(34), y + h, 0x8000)
+        self.T(ic["chev_down"], self.fonts["icon_s"], MenuPainter.MUTED, x + w - p(32), y, x + w - p(10), y + h, 0x1)
+        self.add(wid, "picker", (x, y, x + w, y + h), radius=p(7))
+
+    def _slider(self, wid, x0, x1, cy, value):
+        p = self.px
+        th = p(4)
+        fx = x0 + (x1 - x0) * max(0.0, min(100.0, value)) / 100
+        self.S("round", 0x3A3D49, x0, cy - th / 2, x1 - x0, th, th / 2)
+        if fx > x0:
+            self.S("round", MenuPainter.ACCENT, x0, cy - th / 2, fx - x0, th, th / 2)
+        d = p(22)
+        inner = p(12) if self.hover == wid or self.drag == wid else p(10)
+        self.S("circle", 0x2B2D38, fx - d / 2, cy - d / 2, d)
+        self.S("outline", 0x45485A, fx - d / 2, cy - d / 2, d, d, d / 2, max(1.0, self.k))
+        self.S("circle", MenuPainter.ACCENT, fx - inner / 2, cy - inner / 2, inner)
+        self.add(wid, "slider", (x0 - p(12), cy - p(16), x1 + p(12), cy + p(16)), x0=x0, x1=x1, radius=p(16))
+
+    def _tile(self, wid, x, y, w, h, icon, title, desc, selected):
+        p, ic = self.px, MenuPainter.ICONS
+        hov = self.hover == wid
+        self.S("round", 0x1D1A30 if selected else (self.HOVER if hov else self.CARD), x, y, w, h, p(10))
+        self.S("outline", MenuPainter.ACCENT if selected else self.LINE, x, y, w, h, p(10),
+               max(1.5, p(2)) if selected else max(1.0, self.k))
+        self.S("round", 0x2A2448 if selected else 0x25272F, x + p(18), y + p(18), p(36), p(36), p(9))
+        self.T(ic[icon], self.fonts["icon"], MenuPainter.LABEL if selected else MenuPainter.ICON,
+               x + p(18), y + p(18), x + p(54), y + p(54), 0x1)
+        tx = x + p(70)
+        self.T(title, self.fonts["h2"], MenuPainter.TEXT, tx, y + p(16), x + w - p(48), y + p(40), 0x8000)
+        dh = self.wrap_h(desc, self.painter.f_small, x + w - p(20) - tx)
+        self.content[1].append(("wrap", desc, self.painter.f_small, MenuPainter.MUTED, tx, y + p(42), x + w - p(20),
+                                y + p(42) + dh))
+        d = p(18)
+        rx, ry = x + w - p(18) - d, y + p(18)
+        if selected:
+            self.S("circle", MenuPainter.ACCENT, rx, ry, d)
+            self.S("circle", 0xFFFFFF, rx + d / 2 - p(3.5), ry + d / 2 - p(3.5), p(7))
+        else:
+            self.S("outline", MenuPainter.RING, rx, ry, d, d, d / 2, max(1.2, self.k * 1.5))
+        self.add(wid, "tile", (x, y, x + w, y + h), radius=p(10))
+
+    # ---- conditions, as words
+    def _monitors(self, fresh=False):
+        if fresh or time.monotonic() - self.mons_t > 5:
+            self.mons, self.mons_t = list_monitors(), time.monotonic()
+        return self.mons
+
+    def _app_name(self, r):
+        if not r.get("app"):
+            return tr("sync_any_app")
+        return r.get("name") or r["app"][:-4]
+
+    def _screen_text(self, screen, short=False):
+        if not screen:
+            return tr("sync_any_screen")
+        if screen == "leds":
+            names = self.state.screens
+            return tr("sync_led_screen") + (f" · {names[0]}" if names and not short else "")
+        m = next((m for m in self._monitors() if screen in (m.name, m.device)), None)
+        return (tr("sync_screen_n", n=m.index) + ("" if short else f" · {screen}")) if m else screen
+
+    def _rule_desc(self, r):
+        return f"{tr('sync_' + r['when'])} · {self._screen_text(r['screen'])}"
+
+    def _rule_text(self, r):
+        if not r:
+            return ""
+        when = tr("sync_" + r["when"])
+        text = f"{self._app_name(r)} {when[:1].lower()}{when[1:]}"
+        return text + (f" · {self._screen_text(r['screen'], short=True)}" if r["screen"] else "")
+
+    def _sync_summary(self):
+        s = self.state
+        if not s.rules:
+            return tr("sync_always")
+        text = tr("sync_one") if len(s.rules) == 1 else tr("sync_many", n=len(s.rules))
+        return f"{text} · {tr('state_waiting')}" if s.enabled and s.waiting else text
+
+    def _app_icon(self, path):
+        if not path:
+            return None
+        if path not in self.app_icons:
+            h, size = HANDLE(), self.px(28)
+            try:
+                n = user32.PrivateExtractIconsW(path, 0, size, size, byref(h), None, 1, 0)
+            except OSError:
+                n = 0
+            self.app_icons[path] = h.value if n and h.value else None
+        return self.app_icons[path]
+
+    def _glows(self, n=28):
+        """The LED colours as up to n glows around the screen: (x, y on the screen's border 0..1, colour)."""
+        out = []
+        for uv, colors in list(self.state.preview or []):
+            pts = []
+            for (u, v), c in zip(uv, colors):
+                e = edge_point(u, v)
+                if e is not None:
+                    pts.append((math.atan2(e[1] - 0.5, e[0] - 0.5), e, c))
+            if not pts:
+                continue
+            pts.sort(key=lambda t: t[0])
+            k = min(n, len(pts))
+            for i in range(k):
+                grp = pts[i * len(pts) // k:(i + 1) * len(pts) // k]
+                m = len(grp)
+                ex, ey = sum(g[1][0] for g in grp) / m, sum(g[1][1] for g in grp) / m
+                r, g_, b = (int(sum(g[2][j] for g in grp) / m) for j in range(3))
+                out.append((ex, ey, (r << 16) | (g_ << 8) | b))
+        return out
+
+    # ---- layout of everything
+    def compose(self):
+        """Display lists for the sidebar and the current page, and the widgets under them."""
+        p, (W, H) = self.px, self.size
+        self.widgets, self.side, self.content = [], ([], []), ([], [])
+        self.sw = p(264)
+        self.cx0 = self.sw + p(8)
+        self.cx1 = max(self.cx0 + p(380), min(W - p(36), self.cx0 + p(860)))
+        self._sidebar()
+        y = getattr(self, "_page_" + self.page)(p(30) - self.scroll)
+        self._nav("quit", p(14), H - p(18) - p(38), self.sw - p(28), "quit", tr("app_quit"), False, quiet=True)
+        self.max_scroll = max(0, y + self.scroll + p(36) - H)
+        if self.scroll > self.max_scroll:  # taller window, or a shorter page: show its end
+            self.scroll = self.max_scroll
+            return self.compose()
+        if self.focus_visible:  # keyboard focus ring
+            w = next((w for w in self.widgets if w["id"] == self.focus), None)
+            if w:
+                x0, y0, x1, y1 = w["rect"]
+                r = w.get("radius", p(8)) + p(3)
+                self.S("outline", 0xFFFFFF, x0 - p(3), y0 - p(3), x1 - x0 + p(6), y1 - y0 + p(6), r, max(1.5, p(2)), 225,
+                       side=w["side"])
+
+    def _sidebar(self):
+        p, s = self.px, self.state
+        x, w = p(14), self.sw - p(28)
+        y = p(22)
+        self.I(self.icon, x + p(8), y, p(32), side=True)
+        self.T("Glowback", self.fonts["name"], MenuPainter.TEXT, x + p(52), y - p(3), x + w, y + p(19), side=True)
+        self.T(f"v{__version__}", self.painter.f_small, MenuPainter.MUTED, x + p(52), y + p(18), x + w, y + p(36),
+               side=True)
+        y += p(58)
+        text, color = self._status()
+        self.S("round", 0x1A1B21, x + p(2), y, w - p(4), p(34), p(17), side=True)
+        self.S("outline", 0x24262E, x + p(2), y, w - p(4), p(34), p(17), max(1.0, self.k), side=True)
+        self.S("circle", color, x + p(16), y + p(13), p(8), side=True)
+        self.T(text, self.painter.f_small, MenuPainter.ICON, x + p(32), y, x + w - p(10), y + p(34), 0x8000, side=True)
+        y += p(52)
+        for page, icon, key in self.PAGES:
+            self._nav("nav:" + page, x, y, w, icon, tr(key), self.page == page)
+            y += p(42)
+
+    def _page_light(self, y):
+        p, s = self.px, self.state
+        x0, x1 = self.cx0, self.cx1
+        y = self._header(y, tr("nav_light"), tr("light_sub"))
+        h = p(256)
+        self._card(y, h)
+        self._preview(x0, y, x1 - x0, h)
+        tx = x1 - p(24) - p(42)
+        self._toggle("enabled", tx, y + p(24), s.enabled)
+        label = tr("ambilight")
+        lw = self.tw(label, self.fonts["body"])
+        self.T(label, self.fonts["body"], MenuPainter.TEXT, tx - p(12) - lw, y + p(24), tx - p(12), y + p(46))
+        y += h + p(22)
+        y = self._label(y, tr("mode"))
+        gap = p(12)
+        tile_w = (x1 - x0 - gap) / 2
+        descs = (tr("mode_zones_desc"), tr("mode_average_desc"))
+        th = max(p(88), p(42) + max(self.wrap_h(d, self.painter.f_small, tile_w - p(90)) for d in descs) + p(18))
+        for i, (mode, icon, key) in enumerate((("zones", "monitor", "zones"), ("average", "palette", "average"))):
+            self._tile("mode:" + mode, x0 + i * (tile_w + gap), y, tile_w, th, icon, tr(key), descs[i], s.mode == mode)
+        y += th + p(22)
+        y = self._label(y, tr("brightness"))
+        h = p(64)
+        self._card(y, h)
+        self.T(MenuPainter.ICONS["sun"], self.fonts["icon"], MenuPainter.ICON, x0 + p(20), y, x0 + p(44), y + h, 0x1)
+        self._slider("brightness", x0 + p(66), x1 - p(88), y + h / 2, s.brightness)
+        self.T(f"{round(s.brightness)} %", self.fonts["body"], MenuPainter.TEXT, x1 - p(76), y, x1 - p(20), y + h, 0x2)
+        y += h + p(12)
+        h = p(64)
+        self._card(y, h)
+        self._row_hover("goto:sync", y, h)
+        self._row_text(y, h, "filter", tr("sync_when"), self._sync_summary(), right=x1 - p(60),
+                       desc_color=MenuPainter.AMBER if s.enabled and s.waiting else None)
+        self.T(MenuPainter.ICONS["chev_right"], self.fonts["icon_s"], MenuPainter.MUTED, x1 - p(44), y, x1 - p(20),
+               y + h, 0x1)
+        self.add("goto:sync", "row", (x0, y, x1, y + h), radius=p(10))
+        return y + h
+
+    def _preview(self, x, y, w, h):
+        """The screen, its stand, and the light the LEDs throw on the wall: live while Glowback follows the screen."""
+        p, s = self.px, self.state
+        glows = self._glows() if s.enabled and not s.waiting else []
+        self.S("clip", x + 1, y + 1, w - 2, h - 2, p(10))
+        mh = min((h / 2 - p(12)) / 0.93, w * 0.40 * 9 / 16)  # the halo (0.43 of the height) stays in the card
+        mw = mh * 16 / 9
+        mx, my = x + (w - mw) / 2, y + (h - mh) / 2 - p(8)
+        if glows:
+            for ex, ey, color in glows:
+                dx, dy = ex - 0.5, ey - 0.5
+                n = max(abs(dx), abs(dy)) or 1.0
+                self.S("glow", color, mx + ex * mw + dx / n * mw * 0.07, my + ey * mh + dy / n * mh * 0.09,
+                       mw * 0.24, mh * 0.34, 185)
+        else:
+            idle = 0x4B3F86 if s.enabled else 0x34363F
+            for ex, ey in ((0.5, 0.0), (0.5, 1.0), (0.0, 0.5), (1.0, 0.5)):
+                self.S("glow", idle, mx + ex * mw, my + ey * mh, mw * 0.42, mh * 0.42, 60)
+        nw, nh = mw * 0.08, mh * 0.2
+        self.S("round", 0x1C1E25, mx + mw / 2 - nw / 2, my + mh, nw, nh, p(2))
+        bw, bh = mw * 0.34, max(p(6), mh * 0.05)
+        self.S("round", 0x262830, mx + mw / 2 - bw / 2, my + mh + nh - p(2), bw, bh, bh / 2)
+        bez = max(p(3), mw * 0.012)
+        self.S("round", 0x2B2D35, mx - bez, my - bez, mw + 2 * bez, mh + 2 * bez, p(6))
+        self.S("round", 0x08090B, mx, my, mw, mh, p(4))
+        self.S("unclip")
+        text, color = self._status()
+        if not glows:  # a quiet sign of why the screen throws no light
+            glyph = "pause" if not s.enabled else "clock" if s.waiting else "search"
+            self.T(MenuPainter.ICONS[glyph], self.fonts["icon_l"], 0x4A4E5C, mx, my, mx + mw, my + mh, 0x1)
+        self.S("circle", color, x + p(24), y + p(31), p(9))
+        self.T(text, self.fonts["h2"], MenuPainter.TEXT, x + p(42), y + p(22), x + w / 2, y + p(46), 0x8000)
+        if s.screens and s.leds:
+            self.T(" · ".join(s.screens), self.painter.f_small, MenuPainter.MUTED, x + p(42), y + p(46), x + w / 2,
+                   y + p(64), 0x8000)
+
+    def _page_sync(self, y):
+        p, s, ic = self.px, self.state, MenuPainter.ICONS
+        x0, x1 = self.cx0, self.cx1
+        y = self._header(y, tr("sync_when"), tr("sync_sub"))
+        if not s.enabled:
+            glyph, color, text = "info", MenuPainter.MUTED, tr("sync_now_paused")
+        elif not s.rules:
+            glyph, color, text = "check", MenuPainter.GREEN, tr("sync_now_always")
+        elif s.waiting:
+            glyph, color, text = "clock", MenuPainter.AMBER, tr("sync_now_waiting")
+        else:
+            glyph, color, text = "check", MenuPainter.GREEN, tr("sync_now_on", rule=self._rule_text(s.rule_hit))
+        th = self.wrap_h(text, self.fonts["body"], x1 - x0 - p(82))
+        h = max(p(56), th + p(30))
+        self._card(y, h)
+        self.T(ic[glyph], self.fonts["icon"], color, x0 + p(20), y, x0 + p(44), y + h, 0x1)
+        self.W(text, self.fonts["body"], MenuPainter.TEXT, x0 + p(62), y + (h - th) / 2, x1 - p(20), y + (h + th) / 2)
+        y += h + p(28)
+        y = self._label(y, tr("sync_list"))
+        if s.rules:
+            rh = p(64)
+            self._card(y, rh * len(s.rules))
+            for i, r in enumerate(s.rules):
+                ry = y + i * rh
+                if i:
+                    self._sep(ry)
+                bx = self._button(f"remove:{i}", x1 - p(14), ry + (rh - p(32)) / 2, tr("sync_remove"), "quiet",
+                                  icon="delete", h=p(32))
+                hicon = self._app_icon(r.get("path"))
+                self._row_text(ry, rh, None if hicon else ("apps" if r["app"] else "filter"), self._app_name(r),
+                               self._rule_desc(r), right=bx - p(12), hicon=hicon)
+            y += rh * len(s.rules)
+        else:
+            h = p(56)
+            self._card(y, h)
+            self.T(tr("sync_empty"), self.fonts["body"], MenuPainter.MUTED, x0 + p(20), y, x1 - p(20), y + h, 0x8000)
+            y += h
+        y += p(28)
+        y = self._label(y, tr("sync_add_title"))
+        pad, gap = p(20), p(14)
+        add = tr("sync_add")
+        help_text = tr("sync_examples")
+        help_h = self.wrap_h(help_text, self.painter.f_small, x1 - x0 - 2 * pad)
+        rows_h = 2 * (p(22) + p(36)) + p(16)  # app and when, then screen and the button
+        ch = pad + rows_h + p(18) + help_h + pad
+        self._card(y, ch)
+        d = self.draft
+        texts = (d["name"] or (d["app"][:-4] if d["app"] else tr("sync_any_app")), tr("sync_" + d["when"]),
+                 self._screen_text(d["screen"]))
+        half = (x1 - x0 - 2 * pad - gap) / 2
+        xs = (x0 + pad, x0 + pad + half + gap, x0 + pad)
+        ys = (y + pad, y + pad, y + pad + p(58) + p(16))
+        for key, xx, yy, text, wid in zip(("sync_app", "sync_when_label", "sync_screen"), xs, ys, texts,
+                                          ("pick:app", "pick:when", "pick:screen")):
+            self.T(tr(key).upper(), self.painter.f_label, MenuPainter.MUTED, xx + p(2), yy, xx + half, yy + p(16))
+            if wid == "pick:app":
+                hicon = self._app_icon(d["path"])
+                self._picker(wid, xx, yy + p(22), half, text, hicon=hicon, glyph=None if hicon else "apps")
+            else:
+                self._picker(wid, xx, yy + p(22), half, text, glyph="monitor" if wid == "pick:screen" else "filter")
+        self._button("add", x1 - pad, ys[2] + p(23), add, "primary", icon="add")
+        hy = y + pad + rows_h + p(18)
+        self.W(help_text, self.painter.f_small, MenuPainter.MUTED, x0 + pad, hy, x1 - pad, hy + help_h)
+        return y + ch
+
+    def _page_home(self, y):
+        p, ic = self.px, MenuPainter.ICONS
+        x0, x1 = self.cx0, self.cx1
+        ha, cfg = getattr(self.tray, "ha", None), ha_settings()
+        y = self._header(y, "Home Assistant", tr("home_sub"))
+        status = ha.status if ha else "off"
+        if cfg and status == "connected":
+            title, desc, color = tr("home_connected", host=cfg["host"]), tr("home_connected_desc"), MenuPainter.GREEN
+        elif cfg and status == "connecting":
+            title, desc, color = tr("ha_connecting"), cfg["host"], MenuPainter.MUTED
+        elif cfg:
+            title, desc, color = tr("ha_error"), (ha.error if ha and ha.error else cfg["host"]), MenuPainter.AMBER
+        else:
+            title, desc, color = tr("home_not_set"), tr("home_not_set_desc"), MenuPainter.MUTED
+        h = p(84)
+        self._card(y, h)
+        ty = y + (h - p(44)) / 2
+        self.S("round", 0x2A2448, x0 + p(20), ty, p(44), p(44), p(11))
+        self.T(ic["home"], self.fonts["icon_l"], MenuPainter.LABEL, x0 + p(20), ty, x0 + p(64), ty + p(44), 0x1)
+        by = y + (h - p(34)) / 2
+        if cfg:
+            bx = self._button("ha:disconnect", x1 - p(20), by, tr("ha_disconnect"), "quiet")
+            bx = self._button("ha:setup", bx - p(8), by, tr("home_change"), "secondary")
+        else:
+            bx = self._button("ha:setup", x1 - p(20), by, tr("home_setup"), "primary")
+        tx = x0 + p(80)
+        self.S("circle", color, tx, y + p(26) + p(5), p(8))
+        self.T(title, self.fonts["h2"], MenuPainter.TEXT, tx + p(16), y + p(18), bx - p(16), y + p(42), 0x8000)
+        self.T(desc, self.painter.f_small, MenuPainter.MUTED, tx, y + p(44), bx - p(16), y + p(66), 0x8000)
+        y += h + p(28)
+        y = self._label(y, tr("home_entities"))
+        rows = (("light", "light.glowback", tr("home_light")), ("monitor", "sensor.glowback_leds", tr("home_leds")),
+                ("sync", "update.glowback", tr("home_update")))
+        rh = p(62)
+        self._card(y, rh * len(rows))
+        for i, (icon, entity, text) in enumerate(rows):
+            if i:
+                self._sep(y + i * rh)
+            self._row_text(y + i * rh, rh, icon, entity, text)
+        y += rh * len(rows) + p(28)
+        y = self._label(y, tr("home_voice"))
+        guide = tr("ha_guide")
+        bw = self.tw(guide, self.fonts["button"]) + p(54)
+        text = tr("home_voice_text")
+        th = self.wrap_h(text, self.fonts["body"], x1 - x0 - p(62) - bw - p(40))
+        h = max(p(76), th + p(36))
+        self._card(y, h)
+        bx = self._button("link:guide", x1 - p(20), y + (h - p(34)) / 2, guide, "secondary", icon="link")
+        self.T(ic["mic"], self.fonts["icon"], MenuPainter.ICON, x0 + p(20), y, x0 + p(44), y + h, 0x1)
+        self.W(text, self.fonts["body"], MenuPainter.TEXT, x0 + p(62), y + (h - th) / 2, bx - p(20), y + (h + th) / 2)
+        return y + h
+
+    def _page_settings(self, y):
+        p, s, t = self.px, self.state, self.tray
+        x0, x1 = self.cx0, self.cx1
+        y = self._header(y, tr("nav_settings"), tr("settings_sub"))
+        rh = p(68)
+        self._card(y, rh)
+        tx = x1 - p(20) - p(42)
+        self._toggle("autostart", tx, y + (rh - p(22)) / 2, t.autostart, row=(x0, y, x1, y + rh))
+        self._row_text(y, rh, "power", tr("start_windows"), tr("settings_start_desc"), right=tx - p(16))
+        y += rh + p(28)
+        y = self._label(y, tr("settings_updates"))
+        rows = 3 if s.new_version else 2
+        self._card(y, rh * rows)
+        ry = y
+        if s.new_version:
+            bx = self._button("update", x1 - p(20), ry + (rh - p(34)) / 2, tr("update_to", version=s.new_version),
+                              "primary", icon="sync")
+            self._row_text(ry, rh, "sync", tr("settings_new", version=s.new_version), None, right=bx - p(16),
+                           icon_color=MenuPainter.ACCENT)
+            ry += rh
+            self._sep(ry)
+        result = t._check_status()
+        bx = self._button("check", x1 - p(20), ry + (rh - p(34)) / 2, tr("settings_check_now"), "secondary",
+                          busy=t.checking)
+        self._row_text(ry, rh, "sync", tr("updates"), result[0] if result else f"Glowback {__version__}",
+                       right=bx - p(16), desc_color=result[1] if result else None)
+        ry += rh
+        self._sep(ry)
+        self._toggle("auto_check", tx, ry + (rh - p(22)) / 2, s.check_updates, row=(x0, ry, x1, ry + rh))
+        self._row_text(ry, rh, "clock", tr("auto_check"), tr("settings_check_desc"), right=tx - p(16))
+        y += rh * rows + p(28)
+        y = self._label(y, tr("settings_lang"))
+        self._card(y, rh)
+        pw = p(230)
+        code = load_settings().get("lang") or ""
+        name = next((n for c, n in self.LANG_NAMES if c == code), None) or tr("lang_auto")
+        self._picker("pick:lang", x1 - p(20) - pw, y + (rh - p(36)) / 2, pw, name, glyph="lang")
+        self._row_text(y, rh, "lang", tr("settings_lang_label"), None, right=x1 - p(36) - pw)
+        y += rh + p(28)
+        y = self._label(y, tr("settings_help"))
+        self._card(y, rh)
+        bx = self._button("open:log", x1 - p(20), y + (rh - p(34)) / 2, tr("settings_open"), "secondary")
+        self._row_text(y, rh, "doc", tr("open_log"), tr("settings_log_desc"), right=bx - p(16))
+        return y + rh
+
+    def _page_about(self, y):
+        p, ic = self.px, MenuPainter.ICONS
+        x0, x1 = self.cx0, self.cx1
+        y += p(6)
+        self.I(self.icon_big, x0, y, p(72))
+        self.T("Glowback", self.fonts["hero"], MenuPainter.TEXT, x0 + p(92), y + p(4), x1, y + p(44))
+        self.T(tr("about_version", version=__version__), self.painter.f_small, MenuPainter.MUTED, x0 + p(92),
+               y + p(44), x1, y + p(64))
+        y += p(72) + p(20)
+        th = self.wrap_h(tr("about_tagline"), self.fonts["body"], x1 - x0)
+        self.W(tr("about_tagline"), self.fonts["body"], MenuPainter.ICON, x0, y, x1, y + th)
+        y += th + p(24)
+        rows = (("link:star", "star", tr("star"), True), ("link:site", "globe", tr("about_site"), False),
+                ("link:repo", "code", tr("about_source"), False), ("link:issues", "bug", tr("about_issue"), False),
+                ("link:author", "person", tr("made_by", author=AUTHOR), False))
+        rh = p(56)
+        self._card(y, rh * len(rows))
+        for i, (wid, icon, text, accent) in enumerate(rows):
+            ry = y + i * rh
+            if i:
+                self._sep(ry)
+            self._row_hover(wid, ry, rh)
+            self._row_text(ry, rh, icon, text, None, right=x1 - p(52), icon_color=MenuPainter.ACCENT if accent else None)
+            self.T(ic["link"], self.fonts["icon_s"], MenuPainter.MUTED, x1 - p(44), ry, x1 - p(20), ry + rh, 0x1)
+            self.add(wid, "row", (x0, ry, x1, ry + rh), radius=p(10))
+        y += rh * len(rows) + p(18)
+        self.T(tr("about_license"), self.painter.f_small, MenuPainter.MUTED, x0 + p(4), y, x1, y + p(20))
+        return y + p(20)
+
+    # ---- painting
+    def draw(self, hdc, W, H):
+        """Composes and paints everything into hdc, W x H pixels (double-buffered; the page scrolls under the
+        sidebar, clipped by painting it into its own buffer)."""
+        self.size = (W, H)
+        self.compose()
+        bufs = []
+        for _ in range(2):
+            mem = gdi32.CreateCompatibleDC(hdc)
+            bmp = gdi32.CreateCompatibleBitmap(hdc, W, H)
+            bufs.append((mem, bmp, gdi32.SelectObject(mem, bmp)))
+        brush = gdi32.CreateSolidBrush(_cref(self.BG))
+        for mem, _, _ in bufs:
+            user32.FillRect(mem, byref(wt.RECT(0, 0, W, H)), brush)
+        gdi32.DeleteObject(brush)
+        (side, _, _), (page, _, _) = bufs
+        self._render(page, *self.content)
+        gdi32.BitBlt(side, self.sw, 0, W - self.sw, H, page, self.sw, 0, 0x00CC0020)
+        self._render(side, *self.side)
+        gdi32.BitBlt(hdc, 0, 0, W, H, side, 0, 0, 0x00CC0020)
+        for mem, bmp, old in bufs:
+            gdi32.SelectObject(mem, old)
+            gdi32.DeleteObject(bmp)
+            gdi32.DeleteDC(mem)
+
+    def _render(self, hdc, shapes, texts):
+        gfx = Gfx(hdc)
+        for shape in shapes:
+            gfx.draw(shape)
+        gfx.close()
+        gdi32.SetBkMode(hdc, 1)
+        for item in texts:
+            if item[0] == "text":
+                _, text, font, color, l, t, r, b, flags = item
+                self.painter._text(hdc, text, font, color, l, t, r, b, flags)
+            elif item[0] == "wrap":
+                _, text, font, color, l, t, r, b = item
+                gdi32.SelectObject(hdc, font)
+                gdi32.SetTextColor(hdc, _cref(color))
+                rc = wt.RECT(int(l), int(t), int(r), int(b))
+                user32.DrawTextW(hdc, text, -1, byref(rc), 0x10 | 0x800)  # WORDBREAK | NOPREFIX
+            elif item[0] == "icon" and item[1]:
+                _, hicon, x, y, size = item
+                user32.DrawIconEx(hdc, int(x), int(y), hicon, int(size), int(size), 0, None, 3)
+
+    # ---- actions
+    def _widget(self, wid):
+        return next((w for w in self.widgets if w["id"] == wid), None)
+
+    def _hit(self, x, y):
+        for w in self.widgets:
+            x0, y0, x1, y1 = w["rect"]
+            if (w["side"] or x >= self.sw) and x0 <= x < x1 and y0 <= y < y1:
+                return w
+        return None
+
+    def activate(self, wid):
+        s, t = self.state, self.tray
+        if wid.startswith("nav:") or wid == "goto:sync":
+            self.page, self.scroll = wid.split(":")[1], 0
+            if self.page == "settings":
+                t.autostart = autostart_enabled()
+            self._timers()
+        elif wid == "enabled":
+            s.update(enabled=not s.enabled)
+            t.refresh()
+        elif wid.startswith("mode:"):
+            s.update(mode=wid[5:])
+        elif wid == "autostart":
+            set_autostart(not t.autostart, t.argv)
+            t.autostart = autostart_enabled()
+        elif wid == "auto_check":
+            s.update(check_updates=not s.check_updates)
+        elif wid == "check":
+            t.check_now()
+            self._timers()
+        elif wid == "update":
+            t.start_update()
+        elif wid == "ha:setup":
+            t.ha_window()
+        elif wid == "ha:disconnect":
+            save_settings({"home_assistant": None})
+            t.ha_changed()
+        elif wid == "link:guide":
+            os.startfile(ha_guide_url())
+        elif wid == "open:log":
+            os.startfile(LOG_PATH)
+        elif wid.startswith("link:"):
+            os.startfile({"star": REPO_URL, "repo": REPO_URL, "site": self.SITE_URL, "issues": REPO_URL + "/issues",
+                          "author": AUTHOR_URL}[wid[5:]])
+        elif wid == "quit":
+            k32.SetEvent(t.stop.h)
+        elif wid.startswith("pick:"):
+            self._pick(wid[5:])
+        elif wid == "add":
+            d = self.draft
+            rule = dict(app=d["app"], when=d["when"], screen=d["screen"], name=d["name"], path=d["path"])
+            s.set_rules(s.rules + [rule])
+        elif wid.startswith("remove:"):
+            rules = list(s.rules)
+            i = int(wid[7:])
+            if i < len(rules):
+                del rules[i]
+                s.set_rules(rules)
+            if self.focus == wid:
+                self.focus = None
+        self.invalidate()
+
+    def _slide(self, x, save=False):
+        w = self._widget("brightness")
+        if not w:
+            return
+        v = round(max(0.0, min(1.0, (x - w["x0"]) / max(1, w["x1"] - w["x0"]))) * 20) * 5
+        s = self.state
+        if save:
+            s.update(brightness=v)
+        elif v != round(s.brightness):
+            s.brightness = v  # live while dragging; saved once released
+            s.version += 1
+        self.invalidate()
+
+    def _pick(self, which):
+        w = self._widget("pick:" + which)
+        if not w:
+            return
+        items, values, d = [], [], self.draft
+
+        def radio(text, value, checked):
+            items.append(dict(kind="radio", text=text, checked=checked))
+            values.append(value)
+
+        def other(kind, text="", value=None):
+            items.append(dict(kind=kind, text=text, icon="add" if kind == "action" else None))
+            values.append(value)
+
+        if which == "app":
+            radio(tr("sync_any_app"), ("", "", ""), not d["app"])
+            apps = AppWatch().open_apps()
+            if d["app"] and all(a[0] != d["app"] for a in apps):
+                radio(d["name"] or d["app"][:-4], (d["app"], d["name"], d["path"]), True)
+            if apps:
+                other("sep")
+                other("label", tr("sync_open_apps"))
+                for exe, name, path in apps[:24]:
+                    radio(name, (exe, name, path), exe == d["app"])
+            other("sep")
+            other("action", tr("sync_browse"), "browse")
+        elif which == "when":
+            for when in WHEN:
+                if when != "running" or d["app"]:
+                    radio(tr("sync_" + when), when, d["when"] == when)
+        elif which == "screen":
+            radio(tr("sync_any_screen"), "", not d["screen"])
+            radio(self._screen_text("leds"), "leds", d["screen"] == "leds")
+            other("sep")
+            for m in self._monitors(fresh=True):
+                key = m.name or m.device
+                radio(f"{tr('sync_screen_n', n=m.index)} · {key}", key, d["screen"] == key)
+        elif which == "lang":
+            saved = load_settings().get("lang") or ""
+            for code, name in self.LANG_NAMES:
+                radio(name or tr("lang_auto"), code, saved == code)
+        for it in items:
+            it["min"] = (w["rect"][2] - w["rect"][0]) / self.k
+        choice = self._menu(items, w["rect"])
+        if choice is None or values[choice] is None:
+            return
+        value = values[choice]
+        if which == "app":
+            if value == "browse":
+                path = pick_program(self.hwnd)
+                if not path:
+                    return
+                value = (app_key(path), app_description(path), path)
+            d["app"], d["name"], d["path"] = value
+            if not d["app"] and d["when"] == "running":
+                d["when"] = "foreground"
+        elif which == "when":
+            d["when"] = value
+        elif which == "screen":
+            d["screen"] = value
+        elif which == "lang":
+            save_settings({"lang": value or None})
+            set_lang(value or detect_lang())
+            self.tray.refresh()
+        self.invalidate()
+
+    def _menu(self, items, rect):
+        """An owner-drawn popup menu in the panel's style, under a picker: the index chosen, or None."""
+        self.menu_items = items
+        menu = user32.CreatePopupMenu()
+        info = MENUINFO()
+        info.cbSize, info.fMask, info.hbrBack = sizeof(info), 0x2, self.painter.bg_brush  # MIM_BACKGROUND
+        user32.SetMenuInfo(menu, byref(info))
+        for i, it in enumerate(items):
+            flags = 0x100 | (0x2 if it["kind"] in ("sep", "label") else 0)  # MF_OWNERDRAW, MF_DISABLED
+            user32.AppendMenuW(menu, flags, i + 1, ctypes.c_void_p(i))
+        pt = wt.POINT(int(rect[0]), int(rect[3]) + self.px(4))
+        user32.ClientToScreen(self.hwnd, byref(pt))
+        cmd = user32.TrackPopupMenu(menu, 0x0100 | 0x0080, pt.x, pt.y, 0, self.hwnd, None)  # RETURNCMD, NONOTIFY
+        user32.DestroyMenu(menu)
+        self.menu_items = []
+        return cmd - 1 if cmd else None
+
+    def _key(self, vk):
+        order = []
+        for w in self.widgets:
+            if w["focus"] and w["id"] not in order:
+                order.append(w["id"])
+        if vk == 0x09:  # Tab, Shift+Tab
+            self.focus_visible = True
+            if order:
+                i = order.index(self.focus) if self.focus in order else -1
+                back = user32.GetKeyState(0x10) & 0x8000
+                self.focus = order[(i + (-1 if back else 1)) % len(order)]
+                self._reveal(self.focus)
+            self.invalidate()
+            return 0
+        if vk in (0x0D, 0x20) and self.focus in order:  # Enter, Space
+            self.activate(self.focus)
+            return 0
+        if vk in (0x25, 0x26, 0x27, 0x28) and self.focus == "brightness":  # arrows
+            step = 5 if vk in (0x26, 0x27) else -5
+            self.state.update(brightness=max(0, min(100, round(self.state.brightness / 5) * 5 + step)))
+            self.invalidate()
+            return 0
+        if vk in (0x21, 0x22, 0x24, 0x23):  # Page up/down, Home, End
+            H = self.size[1]
+            self.scroll_by({0x21: -H * 0.8, 0x22: H * 0.8, 0x24: -1e9, 0x23: 1e9}[vk])
+            return 0
+        return None
+
+    def _reveal(self, wid):
+        w = self._widget(wid)
+        if not w or w["side"]:
+            return
+        p, H = self.px, self.size[1]
+        if w["rect"][1] < p(16):
+            self.scroll_by(w["rect"][1] - p(16))
+        elif w["rect"][3] > H - p(16):
+            self.scroll_by(w["rect"][3] - (H - p(16)))
+
+    def scroll_by(self, dy):
+        new = int(max(0, min(self.max_scroll, self.scroll + dy)))
+        if new != self.scroll:
+            self.scroll = new
+            self.invalidate()
+
+    # ---- window procedure
+    def _proc(self, hwnd, msg, wparam, lparam):
+        try:
+            r = self._on(hwnd, msg, wparam, lparam)
+            if r is not None:
+                return r
+        except Exception as e:  # never let a drawing error take the tray down
+            log(f"App window: {e!r}")
+        return user32.DefWindowProcW(hwnd, msg, wparam, lparam)
+
+    def _on(self, hwnd, msg, wparam, lparam):
+        xy = lambda: (ctypes.c_short(lparam & 0xFFFF).value, ctypes.c_short((lparam >> 16) & 0xFFFF).value)
+        if msg == 0x000F and self.painter:  # WM_PAINT
+            ps = PAINTSTRUCT()
+            hdc = user32.BeginPaint(hwnd, byref(ps))
+            rc = wt.RECT()
+            user32.GetClientRect(hwnd, byref(rc))
+            if rc.right > 0 and rc.bottom > 0:
+                self.draw(hdc, rc.right, rc.bottom)
+            user32.EndPaint(hwnd, byref(ps))
+            return 0
+        if msg == 0x0014:  # WM_ERASEBKGND: painted in WM_PAINT
+            return 1
+        if msg == 0x0005:  # WM_SIZE
+            self._timers()
+            self.invalidate()
+            return 0
+        if msg == 0x0024 and self.painter:  # WM_GETMINMAXINFO
+            mmi = MINMAXINFO.from_address(lparam)
+            mmi.ptMinTrackSize.x, mmi.ptMinTrackSize.y = self.px(self.MIN[0]), self.px(self.MIN[1])
+            return 0
+        if msg == 0x02E0:  # WM_DPICHANGED: another screen, or its scale changed
+            self.set_scale((wparam & 0xFFFF) / 96.0)
+            rc = wt.RECT.from_address(lparam)
+            user32.SetWindowPos(hwnd, None, rc.left, rc.top, rc.right - rc.left, rc.bottom - rc.top, 0x0014)
+            self.invalidate()
+            return 0
+        if msg == 0x0113:  # WM_TIMER
+            if wparam == 1 and not (self.state.enabled and not self.state.waiting and self.state.preview):
+                return 0  # nothing moves in the preview
+            if wparam == 3 and not self.tray.checking:
+                user32.KillTimer(hwnd, 3)
+            self.invalidate()
+            return 0
+        if msg == 0x0200:  # WM_MOUSEMOVE
+            x, y = xy()
+            if self.drag:
+                self._slide(x)
+                return 0
+            w = self._hit(x, y)
+            wid = w["id"] if w else None
+            if wid != self.hover:
+                self.hover = wid
+                self.invalidate()
+            if not self.tracking:
+                tme = TRACKMOUSEEVENT(sizeof(TRACKMOUSEEVENT), 0x2, hwnd, 0)  # TME_LEAVE
+                self.tracking = bool(user32.TrackMouseEvent(byref(tme)))
+            return 0
+        if msg == 0x02A3:  # WM_MOUSELEAVE
+            self.tracking = False
+            if self.hover:
+                self.hover = None
+                self.invalidate()
+            return 0
+        if msg == 0x0201:  # WM_LBUTTONDOWN
+            x, y = xy()
+            w = self._hit(x, y)
+            self.pressed, self.focus_visible = (w["id"] if w else None), False
+            if w and w["kind"] == "slider":
+                self.drag = w["id"]
+                self.focus = w["id"]
+                user32.SetCapture(hwnd)
+                self._slide(x)
+            self.invalidate()
+            return 0
+        if msg == 0x0202:  # WM_LBUTTONUP
+            x, y = xy()
+            if self.drag:
+                self.drag = self.pressed = None
+                user32.ReleaseCapture()
+                self._slide(x, save=True)
+                return 0
+            w, pressed = self._hit(x, y), self.pressed
+            self.pressed = None
+            if w and w["id"] == pressed:
+                if w["focus"]:
+                    self.focus = w["id"]
+                self.activate(w["id"])
+            self.invalidate()
+            return 0
+        if msg == 0x0215 and self.drag:  # WM_CAPTURECHANGED: dragging ended elsewhere
+            self.drag = None
+            self.state.update(brightness=self.state.brightness)
+            return 0
+        if msg == 0x020A:  # WM_MOUSEWHEEL
+            self.scroll_by(-ctypes.c_short((wparam >> 16) & 0xFFFF).value / 120 * self.px(72))
+            return 0
+        if msg == 0x0100:  # WM_KEYDOWN
+            return self._key(wparam)
+        if msg == 0x002C and self.painter:  # WM_MEASUREITEM: a picker's menu
+            mis = MEASUREITEMSTRUCT.from_address(lparam)
+            if mis.CtlType == 1 and mis.itemData < len(self.menu_items):
+                self.painter.measure(mis, self.menu_items[mis.itemData])
+                return 1
+        if msg == 0x002B and self.painter:  # WM_DRAWITEM
+            dis = DRAWITEMSTRUCT.from_address(lparam)
+            if dis.CtlType == 1 and dis.itemData < len(self.menu_items):
+                self.painter.draw(dis, self.menu_items[dis.itemData])
+                return 1
+        if msg == 0x0121 and wparam == 2 and self.painter:  # WM_ENTERIDLE from the menu: dark rounded border
+            self.painter.style_window(lparam)
+        if msg == 0x0010:  # WM_CLOSE: the window goes, Glowback stays
+            user32.DestroyWindow(hwnd)
+            return 0
+        if msg == 0x0002:  # WM_DESTROY
+            for timer in (1, 2, 3):
+                user32.KillTimer(hwnd, timer)
+            self.hwnd, self.hover, self.pressed, self.drag = None, None, None, None
+            self._free_gdi()
+            self.tray.app_closed()
+            return 0
+        return None
+
+
+# =============================================================================
 # Command line
 # =============================================================================
 def parse_args(argv=None):
@@ -4153,6 +6237,10 @@ def parse_args(argv=None):
                    help="OpenRGB SDK server whose devices are driven too (default: auto-detect on this PC; off to disable)")
     p.add_argument("--home-assistant", metavar="mqtt://USER:PASSWORD@HOST[:PORT]|off",
                    help="show Glowback in Home Assistant through its MQTT broker (saved; off to remove it)")
+    p.add_argument("--sync-when", action="append", metavar="WHEN:APP[@SCREEN]|always",
+                   help="follow the screen only while one of these holds (repeatable, saved): WHEN is running, "
+                        "foreground or fullscreen; APP an .exe name or * for any app; SCREEN leds (the screen the "
+                        "LEDs follow), a number from --list or a name. 'always' removes the conditions")
     p.add_argument("--strip-start", default="bottom-left",
                    choices=["bottom-left", "bottom-center", "bottom-right", "top-left", "top-right"],
                    help="OpenRGB LED strips: where the first LED is (strip runs around the screen)")
@@ -4202,7 +6290,7 @@ def _passthrough(raw):
 def main(argv=None):
     raw = list(sys.argv[1:] if argv is None else argv)
     args = parse_args(raw)
-    set_lang(args.lang or detect_lang())
+    set_lang(args.lang or load_settings().get("lang") or detect_lang())  # the app's Settings page can choose it
     try:  # leftover of a previous in-place update
         os.remove((sys.executable if getattr(sys, "frozen", False) else os.path.abspath(__file__)) + ".old")
     except OSError:
@@ -4213,6 +6301,9 @@ def main(argv=None):
         return
     if args.home_assistant:
         cmd_home_assistant(args.home_assistant)
+        return
+    if args.sync_when:
+        cmd_sync_when(args.sync_when)
         return
     if args.diy_layout:
         cmd_diy_layout(args.diy_layout)
@@ -4267,6 +6358,14 @@ def main(argv=None):
                 if not stop.already_running:
                     break
             relaunch = not stop.already_running
+        tray_hwnd = user32.FindWindowW("GlowbackTray", None) if stop.already_running else None
+        if tray_hwnd and not (args.test or args.calibrate):  # launched again: the running one shows its window
+            pid = wt.DWORD()
+            user32.GetWindowThreadProcessId(tray_hwnd, byref(pid))
+            user32.AllowSetForegroundWindow(pid.value)
+            user32.PostMessageW(tray_hwnd, Tray.WM_OPEN_APP, 0, 0)
+            k32.CloseHandle(stop.h)
+            return
         if stop.already_running:
             msg = tr("already")
             if sys.stdout is None:

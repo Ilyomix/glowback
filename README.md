@@ -26,7 +26,7 @@
 <p align="center">
   <a href="#-install">Install</a> ·
   <a href="#-does-my-monitor-work">Compatibility</a> ·
-  <a href="#-tray-menu">Tray menu</a> ·
+  <a href="#-the-app">The app</a> ·
   <a href="#%EF%B8%8F-uninstall">Uninstall</a> ·
   <a href="#-faq">FAQ</a> ·
   <a href="https://ilyomix.github.io/glowback/">Website</a>
@@ -43,7 +43,8 @@ Glowback is not tied to one brand. It drives any LED device that **Windows Dynam
 - 🎯 **One zone per LED**: each LED is projected onto the nearest screen edge, so the light around your monitor matches the picture. A single "average color" mode is also available.
 - 🎬 **Movies, games, HDR**: GPU capture (DXGI) sees fullscreen video and games, handles HDR, and **ignores movie black bars**.
 - 💡 **Bright, true colors**: a hue-preserving brightness curve keeps the glow visible in dark scenes.
-- 🪟 **A real Windows app**: installer, Start menu, start with Windows, a dark tray menu with live status, and clean uninstall from *Settings → Apps*.
+- 🪟 **A real Windows app**: a window with a live preview of your LEDs, quick settings from the icon next to the clock, installer, Start menu, start with Windows, and clean uninstall from *Settings → Apps*.
+- ⏳ **Sync only when you want**: while an app runs, is in front or full screen, on the screen of your choice. The rest of the time, the LEDs keep their own effect.
 - 🔄 **Update notifications**: Glowback checks GitHub once a day and tells you when a new version is out. One switch turns it off.
 - 🏠 **Home Assistant, Google Assistant, Alexa & Siri**: Glowback shows up as a light you switch from dashboards, automations or by voice.
 - 🌍 **6 languages**: English, French, Spanish, German, Italian and Portuguese, picked from your Windows language.
@@ -87,19 +88,38 @@ Run `glowback --list` (or check the tray menu status) to see what Glowback found
 
 Got it working on another monitor? Open a [device report](https://github.com/Ilyomix/glowback/issues/new?template=device-report.yml) with your `glowback --list` output and a short video. Every report adds a line to this table.
 
-## 🪟 Tray menu
+## 🪟 The app
 
-Right-click (or left-click) the Glowback icon next to the clock:
+<p align="center"><img src="docs/img/app-en.webp" width="760" alt="Glowback's window: a live preview of the light behind the screen, the mode and the brightness"></p>
 
-- **Status**: active with the number of LEDs, paused, or still looking for LEDs
-- **Ambient light**: pause or resume. When paused, the LEDs go back to the device's own effect
-- **Start with Windows** and **Check for updates** switches
-- **Home Assistant**: connection status, click to connect it
-- **Mode**: each LED follows its zone, or one average color
-- **Brightness**: 100 / 75 / 50 / 25 %
-- **Made by Ilyomix**, **Star on GitHub**, **Open log**, **Quit**
+Start Glowback from the Start menu and its window opens. Close it and Glowback keeps running in the background: double-click its icon next to the clock to bring the window back, or click it once for a quick panel.
 
-Settings are remembered. Extra tools are in the Start menu: *Test the LEDs* and *Calibrate the white balance*.
+- **Ambient light**: a live preview of the light your LEDs throw on the wall, the on/off switch, the mode (each LED follows its zone, or one average color) and the brightness
+- **When to sync**: [conditions](#-when-to-sync) to follow the screen only some of the time
+- **Home Assistant**: connection status and setup, what Home Assistant sees, voice assistants
+- **Settings**: start with Windows, updates (now, or automatically once a day), interface language, log
+- **About**: version, website, source code, report a problem
+
+When paused, the LEDs go back to the device's own effect. Settings are remembered. Extra tools are in the Start menu: *Test the LEDs* and *Calibrate the white balance*.
+
+## ⏳ When to sync
+
+By default Glowback follows the screen all the time. On the **When to sync** page, add conditions: Glowback then follows the screen only while one of them is met, and the rest of the time the LEDs show their own effect, as when paused.
+
+A condition is an **app** (one that is open, any other program, or any app), **when** (it is running, in front, or full screen) and **where** (any screen, the LED screen, or another one). For example:
+
+| App | When | Screen | Glowback follows the screen... |
+|---|---|---|---|
+| VLC | Is in front | Any screen | while you watch something in VLC |
+| Any app | Is full screen | The LED screen | during games and full-screen videos on the monitor with the LEDs |
+| Steam | Is running | Any screen | while Steam is open |
+
+Glowback checks four times a second, and recognizes Store apps (Netflix, Disney+...) too. From the command line (saved; a running Glowback follows within 2 seconds):
+
+```
+glowback --sync-when foreground:vlc.exe --sync-when "fullscreen:*@leds"
+glowback --sync-when always
+```
 
 ## 🏠 Home Assistant & Google Assistant
 
@@ -165,6 +185,7 @@ To turn it off for a while, use the **Ambient light** switch in the tray menu. T
 | `--device` | ambient devices | Part of a name or `VID:PID`, or `all` to include keyboards and mice |
 | `--openrgb [HOST:PORT\|off]` | `auto` | OpenRGB SDK server to use (auto-detected on this PC) |
 | `--home-assistant mqtt://USER:PASSWORD@HOST\|off` | | Show Glowback in [Home Assistant](#-home-assistant--google-assistant) (saved) |
+| `--sync-when WHEN:APP[@SCREEN]\|always` | | Follow the screen only while an app runs, is in front or full screen ([when to sync](#-when-to-sync); saved, repeatable) |
 | `--strip-start` / `--strip-ccw` | `bottom-left` | Where OpenRGB LED strips begin, and their direction |
 | `--mirror` / `--flip` | off | Swap left/right or top/bottom |
 | `--calibrate` · `--white-balance R,G,B` | | Per-device white balance (interactive) or fixed multipliers |
@@ -216,11 +237,12 @@ Use *Test the LEDs* in the Start menu (or `glowback --test`). If left and right 
 
 ## 🗺️ Roadmap
 
-- [x] Tray menu, installer, start with Windows, uninstall, update notifications
+- [x] An app with a live preview, quick panel, installer, start with Windows, uninstall, update notifications
 - [x] DXGI capture, HDR, letterbox detection
 - [x] OpenRGB output (auto-detected), DIY RP2040 guide, white balance
 - [x] 6 languages
 - [x] Home Assistant, and through it Google Assistant, Alexa and Siri
+- [x] Sync conditions: an app running, in front or full screen, on a given screen
 - [ ] Code-signed installer and `winget install Glowback`
 - [ ] Rotated (portrait) screens in DXGI capture
 - [ ] Prebuilt RP2040 firmware (.uf2)
