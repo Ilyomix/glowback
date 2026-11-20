@@ -43,7 +43,7 @@ from array import array
 from ctypes import byref, sizeof
 from operator import itemgetter, mul
 
-__version__ = "0.7.2"
+__version__ = "0.8.0"
 
 if sys.platform != "win32":
     sys.exit("Glowback runs on Windows 10/11 (it drives HID LampArray / Dynamic Lighting devices).")
