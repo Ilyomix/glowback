@@ -36,7 +36,7 @@ from array import array
 from ctypes import byref, sizeof
 from operator import itemgetter, mul
 
-__version__ = "0.6.0"
+__version__ = "0.6.1"
 
 if sys.platform != "win32":
     sys.exit("Glowback runs on Windows 10/11 (it drives HID LampArray / Dynamic Lighting devices).")
@@ -190,6 +190,7 @@ NOT_AMBIENT_KINDS = {1, 2, 3}  # skipped unless --device all / a name filter sel
 STOP_EVENT = "Local\\Glowback.Stop"
 LOG_DIR = os.path.join(os.environ.get("LOCALAPPDATA", os.path.expanduser("~")), "Glowback")
 LOG_PATH = os.path.join(LOG_DIR, "glowback.log")
+LOG_PREVIOUS = os.path.join(LOG_DIR, "glowback.previous.log")
 
 
 def log(msg):
@@ -200,6 +201,14 @@ def log(msg):
             f.write(line + "\n")
     except OSError:
         pass
+
+
+def _log_unraisable(u):
+    """An error in a Windows callback (window procedure, timer...) is "unraisable": without a console it would
+    vanish, and the window it belongs to silently stop working."""
+    log(f"Error: {u.exc_value!r} in {getattr(u.object, '__qualname__', u.object)!r}")
+    if sys.stderr is not None:
+        sys.__unraisablehook__(u)
 
 
 def _ok(status):
@@ -1456,6 +1465,18 @@ def request_stop(quiet=False):
     if not quiet:
         print("Stop requested.")
     return True
+
+
+def _other_quit(stop, tries=50):
+    """Waits (tries x 0.1 s) for the running Glowback to quit and takes its single-instance slot; still taken
+    (stop.already_running) if it did not quit."""
+    for _ in range(tries):
+        k32.CloseHandle(stop.h)
+        time.sleep(0.1)
+        stop = StopSignal()
+        if not stop.already_running:
+            break
+    return stop
 
 
 def wanted(dev, device_filter):
@@ -4363,6 +4384,8 @@ class PROCESSENTRY32W(ctypes.Structure):
 
 
 _sig(user32.GetForegroundWindow, HANDLE)
+_sig(user32.GetGuiResources, wt.DWORD, HANDLE, wt.DWORD)
+_sig(k32.GetCurrentProcess, HANDLE)
 _sig(user32.GetWindowThreadProcessId, wt.DWORD, HANDLE, ctypes.POINTER(wt.DWORD))
 _sig(user32.EnumWindows, wt.BOOL, WNDENUMPROC, wt.LPARAM)
 _sig(user32.EnumChildWindows, wt.BOOL, HANDLE, WNDENUMPROC, wt.LPARAM)
@@ -4383,6 +4406,29 @@ _sig(version_dll.GetFileVersionInfoSizeW, wt.DWORD, wt.LPCWSTR, ctypes.POINTER(w
 _sig(version_dll.GetFileVersionInfoW, wt.BOOL, wt.LPCWSTR, wt.DWORD, wt.DWORD, ctypes.c_void_p)
 _sig(version_dll.VerQueryValueW, wt.BOOL, ctypes.c_void_p, wt.LPCWSTR, ctypes.POINTER(ctypes.c_void_p),
      ctypes.POINTER(wt.UINT))
+
+
+def gui_objects():
+    """This process's window and drawing resources, against Windows' limit of 10000 each (for the log)."""
+    me = k32.GetCurrentProcess()
+    return f"GDI objects {user32.GetGuiResources(me, 0)}, USER objects {user32.GetGuiResources(me, 1)}"
+
+
+def app_window_shown(pid):
+    """True if process pid shows Glowback's window."""
+    found = []
+
+    def cb(hwnd, _):
+        p, name = wt.DWORD(), ctypes.create_unicode_buffer(64)
+        user32.GetWindowThreadProcessId(hwnd, byref(p))
+        if p.value == pid and user32.IsWindowVisible(hwnd) and user32.GetClassNameW(hwnd, name, 64) \
+                and name.value.startswith("GlowbackApp"):  # AppWindow's class
+            found.append(hwnd)
+            return False
+        return True
+
+    user32.EnumWindows(WNDENUMPROC(cb), 0)
+    return bool(found)
 
 
 def app_key(name):
@@ -4701,6 +4747,7 @@ class Tray:
         self.state, self.stop, self.argv = state, stop, argv
         self.worker = None
         self.app = None  # the app window, made the first time it opens
+        self.started, self.restarting = time.monotonic(), False  # see open_app()
         on, off = ensure_icons()
         self.icon_path = on
         self.painter, self.items = None, []
@@ -4793,9 +4840,20 @@ class Tray:
         """Glowback's window, on a page; the panel closes."""
         if self.flyout and user32.IsWindow(self.flyout):
             user32.PostMessageW(self.flyout, 0x0010, 0, 0)  # WM_CLOSE
-        if not self.app:
-            self.app = AppWindow(self)
-        self.app.open(page)
+        try:
+            if not self.app:
+                self.app = AppWindow(self)
+            self.app.open(page)
+        except Exception as e:
+            log(f"App window: {e!r}")
+        if self.app and self.app.hwnd:
+            return
+        # Windows refused the window (a long-running process can run out of window or drawing resources): a fresh
+        # Glowback takes over and opens it, see main(). Not right after starting: the new one would fail the same way.
+        if time.monotonic() - self.started > 60 and not self.restarting:
+            self.restarting = True
+            log("The window could not open: restarting Glowback.")
+            subprocess.Popen(launch_command(self.argv), creationflags=0x00000008 | 0x00000200, close_fds=True)
 
     def app_closed(self):
         """The window closed: Glowback keeps running. Said once, the first time."""
@@ -4811,6 +4869,13 @@ class Tray:
             self.app.invalidate()
 
     def _proc(self, hwnd, msg, wparam, lparam):
+        try:
+            return self._on(hwnd, msg, wparam, lparam)
+        except Exception as e:  # without a console the error would vanish: log it, keep the tray running
+            log(f"Tray: {e!r}")
+            return user32.DefWindowProcW(hwnd, msg, wparam, lparam)
+
+    def _on(self, hwnd, msg, wparam, lparam):
         if msg == self.WM_TRAY:
             event = lparam & 0xFFFF
             if event in (0x0202, 0x0205, 0x007B):  # left/right click, context menu
@@ -6472,7 +6537,9 @@ class AppWindow:
         self.hwnd = user32.CreateWindowExW(0, self.cls, "Glowback", 0x00CF0000, x, y, w, h, None, None,
                                            k32.GetModuleHandleW(None), None)  # WS_OVERLAPPEDWINDOW
         if not self.hwnd:
+            err = ctypes.get_last_error()
             self._free_gdi()
+            log(f"App window: Windows refused it ({ctypes.FormatError(err).strip()} [{err}]); {gui_objects()}")
             return
         for attr, value in ((20, 1), (35, _cref(self.BG)), (34, _cref(0x2C2E38))):  # dark, caption, border colours
             v = wt.DWORD(value)
@@ -8135,24 +8202,14 @@ def main(argv=None):
     enabled = saved.get("enabled", True) if args.from_autostart else True
     os.makedirs(LOG_DIR, exist_ok=True)
     stop = StopSignal()
-    relaunch = False
+    relaunch = replaced = False
     if stop.already_running:
         if args.after_update:
-            for _ in range(100):  # the previous version is quitting
-                k32.CloseHandle(stop.h)
-                time.sleep(0.1)
-                stop = StopSignal()
-                if not stop.already_running:
-                    break
+            stop = _other_quit(stop, 100)  # the previous version is quitting
         if stop.already_running and (args.test or args.calibrate):
             print(tr("pausing"))
             request_stop(quiet=True)
-            for _ in range(50):  # wait until the other instance has handed the LEDs back and exited
-                k32.CloseHandle(stop.h)
-                time.sleep(0.1)
-                stop = StopSignal()
-                if not stop.already_running:
-                    break
+            stop = _other_quit(stop)  # once the other instance has handed the LEDs back and exited
             relaunch = not stop.already_running
         tray_hwnd = user32.FindWindowW("GlowbackTray", None) if stop.already_running else None
         if tray_hwnd and not (args.test or args.calibrate):  # launched again: the running one shows its window
@@ -8160,8 +8217,16 @@ def main(argv=None):
             user32.GetWindowThreadProcessId(tray_hwnd, byref(pid))
             user32.AllowSetForegroundWindow(pid.value)
             user32.PostMessageW(tray_hwnd, Tray.WM_OPEN_APP, 0, 0)
-            k32.CloseHandle(stop.h)
-            return
+            for _ in range(50):
+                if app_window_shown(pid.value):
+                    k32.CloseHandle(stop.h)
+                    return
+                time.sleep(0.1)
+            # No window: an older Glowback that has none (the pip version's tray icon), or one that can no longer
+            # open it. This one replaces it.
+            request_stop(quiet=True)
+            stop = _other_quit(stop)
+            replaced = not stop.already_running
         if stop.already_running:
             msg = tr("already")
             if sys.stdout is None:
@@ -8178,11 +8243,14 @@ def main(argv=None):
         elif args.calibrate:
             cmd_calibrate(args, stop)
         else:
-            try:
-                open(LOG_PATH, "w").close()
+            try:  # a new log each start; the previous one is kept (what went wrong before a restart)
+                os.replace(LOG_PATH, LOG_PREVIOUS)
             except OSError:
                 pass
             log(f"Glowback {__version__} - mode {args.mode}, {args.fps:g} fps. Ctrl+C or 'glowback --stop' to quit.")
+            if replaced:
+                log("Replaced a running Glowback that did not open its window (its log: glowback.previous.log).")
+            sys.unraisablehook = _log_unraisable
             state = State(args, enabled)
             if args.no_tray:
                 HomeAssistant(state, stop).start()

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "glowback"
-version = "0.6.0"
+version = "0.6.1"
 description = "Ambient light for monitors with RGB LEDs on the back: every LED follows the screen in real time. Windows Dynamic Lighting (HID LampArray) and OpenRGB devices, HDR, tray app, 6 languages."
 readme = "README.md"
 license = "MIT"
