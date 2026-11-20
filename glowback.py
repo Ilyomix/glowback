@@ -43,7 +43,7 @@ from array import array
 from ctypes import byref, sizeof
 from operator import itemgetter, mul
 
-__version__ = "0.7.1"
+__version__ = "0.7.2"
 
 if sys.platform != "win32":
     sys.exit("Glowback runs on Windows 10/11 (it drives HID LampArray / Dynamic Lighting devices).")
@@ -5158,9 +5158,12 @@ class Tray:
         s = self.state
         status, dot = s.status()
         items = [dict(kind="header", status=status, state=dot)]
-        if s.new_version:
-            items.append(dict(kind="action", id=25, icon="sync", text=tr("update_to", version=s.new_version),
-                              accent=True, highlight=True, link=True))
+        if s.new_version:  # the "check for updates" row becomes the one that downloads and installs it
+            update = dict(kind="action", id=26, icon="sync", text=tr("update_to", version=s.new_version), accent=True,
+                          highlight=True, busy=getattr(self, "updating", False))
+        else:
+            update = dict(kind="action", id=26, icon="sync", text=tr("updates"), busy=self.checking,
+                          status=self._check_status(), statuses=(tr("up_to_date"), tr("check_failed"), "v00.00.00"))
         items += [dict(kind="action", id=29, icon="window", text=tr("open_app")),
                   dict(kind="sep"),
                   dict(kind="toggle", id=1, icon="light", text=tr("ambilight"), on=s.lit()),
@@ -5176,8 +5179,7 @@ class Tray:
                   dict(kind="segments", id=10, icon="sun", text=tr("brightness"), values=(25, 50, 75, 100),
                        value=round(s.brightness)),
                   dict(kind="sep"), dict(kind="label", text=tr("about")),
-                  dict(kind="action", id=26, icon="sync", text=tr("updates"), busy=self.checking,
-                       status=self._check_status(), statuses=(tr("up_to_date"), tr("check_failed"), "v00.00.00")),
+                  update,
                   dict(kind="toggle", id=24, icon="clock", text=tr("auto_check"), on=s.check_updates),
                   dict(kind="action", id=23, icon="person", text=tr("made_by", author=AUTHOR), link=True),
                   dict(kind="action", id=22, icon="star", text=tr("star"), accent=True, link=True),
@@ -5378,7 +5380,7 @@ class Tray:
         elif cid == 10:
             if seg is not None:
                 s.update(brightness=items[i]["values"][seg])
-        elif cid == 26:
+        elif cid == 26 and not s.new_version:
             self.check_now()
         else:  # links, update, quit: close the panel first
             user32.PostMessageW(self.flyout, 0x0010, 0, 0)
@@ -5388,7 +5390,7 @@ class Tray:
                 os.startfile(REPO_URL)
             elif cid == 23:
                 os.startfile(AUTHOR_URL)
-            elif cid == 25:
+            elif cid in (25, 26):  # a new version is out: download and install it
                 self.start_update()
             elif cid == 27:
                 self.open_app("home")
@@ -10789,21 +10791,20 @@ class AppWindow:
         self._row_text(y, rh, "power", tr("start_windows"), tr("settings_start_desc"), right=tx - p(16))
         y += rh + p(28)
         y = self._label(y, tr("settings_updates"))
-        rows = 3 if s.new_version else 2
+        rows = 2
         self._card(y, rh * rows)
         ry = y
-        if s.new_version:
+        if s.new_version:  # the check button becomes the one that downloads and installs it
             bx = self._button("update", x1 - p(20), ry + (rh - p(34)) / 2, tr("update_to", version=s.new_version),
-                              "primary", icon="sync")
-            self._row_text(ry, rh, "sync", tr("settings_new", version=s.new_version), None, right=bx - p(16),
-                           icon_color=MenuPainter.ACCENT)
-            ry += rh
-            self._sep(ry)
-        result = t._check_status()
-        bx = self._button("check", x1 - p(20), ry + (rh - p(34)) / 2, tr("settings_check_now"), "secondary",
-                          busy=t.checking)
-        self._row_text(ry, rh, "sync", tr("updates"), result[0] if result else f"Glowback {__version__}",
-                       right=bx - p(16), desc_color=result[1] if result else None)
+                              "primary", icon="sync", busy=getattr(t, "updating", False))
+            self._row_text(ry, rh, "sync", tr("settings_new", version=s.new_version), f"Glowback {__version__}",
+                           right=bx - p(16), icon_color=MenuPainter.ACCENT)
+        else:
+            result = t._check_status()
+            bx = self._button("check", x1 - p(20), ry + (rh - p(34)) / 2, tr("settings_check_now"), "secondary",
+                              busy=t.checking)
+            self._row_text(ry, rh, "sync", tr("updates"), result[0] if result else f"Glowback {__version__}",
+                           right=bx - p(16), desc_color=result[1] if result else None)
         ry += rh
         self._sep(ry)
         self._toggle("auto_check", tx, ry + (rh - p(22)) / 2, s.check_updates, row=(x0, ry, x1, ry + rh))
