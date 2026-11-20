@@ -17,15 +17,19 @@ The Home Assistant connection uses plain MQTT, as usual on a home network, unles
 
 ## Screen
 
-Glowback reads the screen image in memory to compute the LED colors, many times per second. It never saves or sends it.
+Glowback reads the screen image in memory to compute the LED colors, many times per second. While its window shows the *Ambient light* page, a small copy of the picture (about 400 pixels wide) appears in the preview. Glowback never saves or sends either of them.
 
 ## Apps and windows
 
-Only if you add conditions on the *When to sync* page (or with `--sync-when`), Glowback checks four times a second which app is in front, whether it is full screen, which apps are running and which screens their windows are on, to know whether to follow the screen. When you open the list of apps on that page, it reads the names and icons of the apps with an open window. All of this stays on your computer: Glowback keeps only the conditions you add, and sends nothing.
+Only if you add apps on the *Profiles* page (or with `--sync-when`), Glowback checks four times a second which app is in front, whether it is full screen, which apps are running, which screens their windows are on and, for the *Plays sound* condition, which apps play sound (their volume meters), to know what the LEDs show. When you open the list of apps on that page, it reads the names and icons of the apps with an open window. All of this stays on your computer: Glowback keeps only the apps you add, and sends nothing.
+
+## Sound
+
+Only while the *Music* look shows, Glowback listens to what Windows plays on its default output (the sound you hear, never a microphone) to compute the LED colors 30 times a second. The sound is analysed in memory and dropped right away: it is never recorded, saved or sent. Ten seconds after the Music look ends, Glowback stops listening.
 
 ## Files on your computer
 
-`%LOCALAPPDATA%\Glowback` holds your settings (`settings.json`) and the log of the last session (`glowback.log`). The settings include the sync conditions you add, with each app's name and file path. If you connect Home Assistant, the settings also hold the broker address and user name, and the password encrypted for your Windows account. Uninstalling Glowback removes this folder, the startup entry and the Start menu shortcuts, and removes Glowback from Home Assistant. For the portable and Python versions, `glowback --uninstall` does the same.
+`%LOCALAPPDATA%\Glowback` holds your settings (`settings.json`) and the log of the last session (`glowback.log`). The settings include your colors, your profiles and the apps you add, with each app's name and file path. If you connect Home Assistant, the settings also hold the broker address and user name, and the password encrypted for your Windows account. Uninstalling Glowback removes this folder, the startup entry and the Start menu shortcuts, and removes Glowback from Home Assistant. For the portable and Python versions, `glowback --uninstall` does the same.
 
 ## Changes
 

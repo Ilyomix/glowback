@@ -27,6 +27,8 @@
   <a href="#-install">Install</a> ·
   <a href="#-does-my-monitor-work">Compatibility</a> ·
   <a href="#-the-app">The app</a> ·
+  <a href="#-looks">Looks</a> ·
+  <a href="#-profiles">Profiles</a> ·
   <a href="#%EF%B8%8F-uninstall">Uninstall</a> ·
   <a href="#-faq">FAQ</a> ·
   <a href="https://ilyomix.github.io/glowback/">Website</a>
@@ -41,12 +43,13 @@ Glowback is not tied to one brand. It drives any LED device that **Windows Dynam
 ## ✨ Features
 
 - 🎯 **One zone per LED**: each LED is projected onto the nearest screen edge, so the light around your monitor matches the picture. A single "average color" mode is also available.
+- 🎨 **Colors, gradients and music**: besides the screen, show one color, a gradient (still or flowing), or let the LEDs follow the sound your PC plays: pulse, spectrum or waves.
 - 🎬 **Movies, games, HDR**: GPU capture (DXGI) sees fullscreen video and games, handles HDR, and **ignores movie black bars**.
 - 💡 **Bright, true colors**: a hue-preserving brightness curve keeps the glow visible in dark scenes.
-- 🪟 **A real Windows app**: a window with a live preview of your LEDs, quick settings from the icon next to the clock, installer, Start menu, start with Windows, and clean uninstall from *Settings → Apps*.
-- ⏳ **Sync only when you want**: while an app runs, is in front or full screen, on the screen of your choice. The rest of the time, the LEDs keep their own effect.
+- 🪟 **A real Windows app**: a window with a live preview of your screen and your LEDs, quick settings from the icon next to the clock, installer, Start menu, start with Windows, and clean uninstall from *Settings → Apps*.
+- 🌙 **Profiles**: a softer light at night, at the hours you choose, and a look for each app: music while Spotify plays, the screen for games, blue in your code editor. Or follow the screen only while an app is open.
 - 🔄 **Update notifications**: Glowback checks GitHub once a day and tells you when a new version is out. One switch turns it off.
-- 🏠 **Home Assistant, Google Assistant, Alexa & Siri**: Glowback shows up as a light you switch from dashboards, automations or by voice.
+- 🏠 **Home Assistant, Google Assistant, Alexa & Siri**: Glowback shows up as a light you switch, dim and color from dashboards, automations or by voice.
 - 🌍 **6 languages**: English, French, Spanish, German, Italian and Portuguese, picked from your Windows language.
 - 🔌 **Plug and play**: finds Dynamic Lighting devices and OpenRGB automatically, and reads the physical position of every LED.
 - 🖥️ **Multi-monitor**: each LED device follows its own screen (matched by the monitor's EDID name).
@@ -90,40 +93,62 @@ Got it working on another monitor? Open a [device report](https://github.com/Ily
 
 ## 🪟 The app
 
-<p align="center"><img src="docs/img/app-en.webp" width="760" alt="Glowback's window: a live preview of the light behind the screen, the mode and the brightness"></p>
+<p align="center"><img src="docs/img/app-en.webp" width="760" alt="Glowback's window: a live preview of the screen and the light behind it, the five looks and the brightness"></p>
 
 Start Glowback from the Start menu and its window opens. Close it and Glowback keeps running in the background: double-click its icon next to the clock to bring the window back, or click it once for a quick panel.
 
-- **Ambient light**: a live preview of the light your LEDs throw on the wall, the on/off switch, the mode (each LED follows its zone, or one average color) and the brightness
-- **When to sync**: [conditions](#-when-to-sync) to follow the screen only some of the time
+- **Ambient light**: a live preview of your screen and of the light your LEDs throw on the wall, the on/off switch, the [look](#-looks) (screen, average, color, gradient or music) and the brightness
+- **Profiles**: a [night profile and a look per app](#-profiles)
 - **Home Assistant**: connection status and setup, what Home Assistant sees, voice assistants
 - **Settings**: start with Windows, updates (now, or automatically once a day), interface language, log
 - **About**: version, website, source code, report a problem
 
 When paused, the LEDs go back to the device's own effect. Settings are remembered. Extra tools are in the Start menu: *Test the LEDs* and *Calibrate the white balance*.
 
-## ⏳ When to sync
+## 🎨 Looks
 
-By default Glowback follows the screen all the time. On the **When to sync** page, add conditions: Glowback then follows the screen only while one of them is met, and the rest of the time the LEDs show their own effect, as when paused.
+Glowback does more than follow the screen. On the **Ambient light** page, pick what the LEDs show:
 
-A condition is an **app** (one that is open, any other program, or any app), **when** (it is running, in front, or full screen) and **where** (any screen, the LED screen, or another one). For example:
+| Look | What the LEDs show |
+|---|---|
+| **Screen** | Each LED follows the part of the picture next to it (the default) |
+| **Average** | One color for all the LEDs: the screen's average |
+| **Color** | One color: 10 swatches, or any hue and saturation |
+| **Gradient** | 2 to 4 colors from left to right, still or slowly flowing, and 6 presets |
+| **Music** | The LEDs follow the sound your PC plays: **Pulse** (they all beat together), **Spectrum** (bass at the bottom, treble at the top) or **Waves** (each beat sends light up both sides). Their colors: a rainbow, the screen's colors, your color or your gradient |
 
-| App | When | Screen | Glowback follows the screen... |
-|---|---|---|---|
-| VLC | Is in front | Any screen | while you watch something in VLC |
-| Any app | Is full screen | The LED screen | during games and full-screen videos on the monitor with the LEDs |
-| Steam | Is running | Any screen | while Steam is open |
+<p align="center"><img src="docs/img/looks-en.webp" width="760" alt="The Music look: the LEDs beat with the sound, in rainbow colors, with its style and sensitivity"></p>
 
-Glowback checks four times a second, and recognizes Store apps (Netflix, Disney+...) too. From the command line (saved; a running Glowback follows within 2 seconds):
+The Music look listens to what Windows plays on its default output (Spotify, YouTube, games...), in memory: no microphone, nothing recorded or sent. From the command line: `glowback --mode color --color "#2864FF"`, `glowback --mode gradient --gradient "#FF326E,#FFDC3C"` or `glowback --mode music`.
+
+## 🌙 Profiles
+
+On the **Profiles** page, the look changes by itself:
+
+- **Night profile**: from 22:00 to 07:00 (your hours), a lower brightness and, if you like, another look, a warm white for example.
+- **By app**: a look for each app, while it **is running**, **is in front**, **is full screen** (on a given screen) or **plays sound**. *Auto* keeps the look of the Ambient light page.
+- **The rest of the time**: when none of these apps matches, keep the Ambient light page's look, give the LEDs back their own effect, or turn them off.
+
+<p align="center"><img src="docs/img/profiles-en.webp" width="760" alt="The Profiles page: a night profile from 22:30 to 07:00 at 35 %, and a look for Spotify, full-screen games and Notepad"></p>
+
+| App | When | Look |
+|---|---|---|
+| Spotify | Plays sound | Music · Pulse |
+| Any app | Is full screen on the LED screen | Screen |
+| Visual Studio Code | Is in front | Blue |
+
+The first app of the list that matches wins, and the night profile's brightness applies to all of them. Glowback checks four times a second and recognizes Store apps (Netflix, Disney+...) too.
+
+From the command line, Glowback can follow the screen only while one of these holds, the LEDs showing their own effect the rest of the time (saved; a running Glowback follows within 2 seconds):
 
 ```
-glowback --sync-when foreground:vlc.exe --sync-when "fullscreen:*@leds"
+glowback --sync-when foreground:vlc.exe --sync-when "fullscreen:*@leds" --sync-when playing:spotify.exe
 glowback --sync-when always
 ```
 
 ## 🏠 Home Assistant & Google Assistant
 
-Glowback can show up in [Home Assistant](https://www.home-assistant.io) as a light: switch the ambient light from your dashboards and automations, or by voice with Google Assistant, Alexa and Siri.
+Glowback can show up in [Home Assistant](https://www.home-assistant.io) as a light: switch, dim or color the ambient light from your dashboards and automations, or by voice with Google Assistant, Alexa and Siri.
 
 1. **In Home Assistant**: *Settings → Apps → Install app → Mosquitto broker*, install it and start it. Home Assistant then offers the **MQTT** integration in *Settings → Devices & services*: add it.
 2. **A user for Glowback** (recommended): *Settings → People → Users → Add user*, for example `glowback`. If you don't see *Users*, turn on *Advanced mode* in your profile.
@@ -133,15 +158,15 @@ Glowback then appears in *Settings → Devices & services → MQTT*:
 
 | Entity | What it does |
 |---|---|
-| `light.glowback` | On/off = ambient light, brightness, and the mode as an effect (*Zones* or *Average*) |
+| `light.glowback` | On/off = ambient light, brightness, color (choosing one switches to the Color look), and the look as an effect (*Zones*, *Average*, *Color*, *Gradient* or *Music*) |
 | `sensor.glowback_leds` | Number of LEDs Glowback drives |
 | `update.glowback` | Shows when a new version is out, and installs it |
 
 It shows as *unavailable* while the PC is off or Glowback is closed. The password is encrypted for your Windows account and only sent to your broker.
 
-**Google Assistant**: with [Home Assistant Cloud](https://www.nabucasa.com), open *Settings → Voice assistants → Expose* and expose **Glowback**, then say *"Hey Google, turn off Glowback"* or *"Hey Google, set Glowback to 50%"*. Without the subscription, follow Home Assistant's [manual Google Assistant setup](https://www.home-assistant.io/integrations/google_assistant/). Alexa works the same way.
+**Google Assistant**: with [Home Assistant Cloud](https://www.nabucasa.com), open *Settings → Voice assistants → Expose* and expose **Glowback**, then say *"Hey Google, turn off Glowback"*, *"Hey Google, set Glowback to 50%"* or *"Hey Google, make Glowback blue"*. Without the subscription, follow Home Assistant's [manual Google Assistant setup](https://www.home-assistant.io/integrations/google_assistant/). Alexa works the same way.
 
-**Siri and Apple Home**: add Home Assistant's [HomeKit Bridge](https://www.home-assistant.io/integrations/homekit/) integration (*Settings → Devices & services → Add integration*; the *Light* domain is enough). Then, in the Home app on your iPhone, tap *Add Accessory* and scan the pairing code Home Assistant shows in its notifications. Say *"Hey Siri, turn off Glowback"* or *"Hey Siri, set Glowback to 50%"*. Apple Home has no light effects, so the mode stays in Glowback's panel and in Home Assistant.
+**Siri and Apple Home**: add Home Assistant's [HomeKit Bridge](https://www.home-assistant.io/integrations/homekit/) integration (*Settings → Devices & services → Add integration*; the *Light* domain is enough). Then, in the Home app on your iPhone, tap *Add Accessory* and scan the pairing code Home Assistant shows in its notifications. Say *"Hey Siri, turn off Glowback"*, *"Hey Siri, set Glowback to 50%"* or *"Hey Siri, set Glowback to blue"*. Apple Home has no light effects, so the other looks stay in Glowback's app and in Home Assistant.
 
 Example automation, ambient light off at midnight:
 
@@ -171,7 +196,8 @@ To turn it off for a while, use the **Ambient light** switch in the tray menu. T
 
 | Option | Default | Description |
 |---|---|---|
-| `--mode zones\|average` | `zones` | Each LED follows its own zone, or one color for all |
+| `--mode zones\|average\|color\|gradient\|music` | `zones` | The [look](#-looks): each LED its zone, one average color, a color, a gradient, or the sound |
+| `--color #RRGGBB` · `--gradient #RRGGBB,#RRGGBB[,...]` | the app's | The color of the Color look, the 2 to 4 colors of the Gradient look |
 | `--brightness 0-100` | `100` | LED brightness |
 | `--boost` | `1.8` | Lifts dim colors without changing their hue (`1` = off) |
 | `--saturation` | `1.25` | Color boost (`1` = true colors) |
@@ -185,7 +211,7 @@ To turn it off for a while, use the **Ambient light** switch in the tray menu. T
 | `--device` | ambient devices | Part of a name or `VID:PID`, or `all` to include keyboards and mice |
 | `--openrgb [HOST:PORT\|off]` | `auto` | OpenRGB SDK server to use (auto-detected on this PC) |
 | `--home-assistant mqtt://USER:PASSWORD@HOST\|off` | | Show Glowback in [Home Assistant](#-home-assistant--google-assistant) (saved) |
-| `--sync-when WHEN:APP[@SCREEN]\|always` | | Follow the screen only while an app runs, is in front or full screen ([when to sync](#-when-to-sync); saved, repeatable) |
+| `--sync-when WHEN:APP[@SCREEN]\|always` | | Follow the screen only while an app runs, is in front, is full screen or plays sound ([profiles](#-profiles); saved, repeatable) |
 | `--strip-start` / `--strip-ccw` | `bottom-left` | Where OpenRGB LED strips begin, and their direction |
 | `--mirror` / `--flip` | off | Swap left/right or top/bottom |
 | `--calibrate` · `--white-balance R,G,B` | | Per-device white balance (interactive) or fixed multipliers |
@@ -209,6 +235,7 @@ flowchart LR
 2. **Geometry**: each LampArray LED reports its X/Y/Z position. Glowback projects every LED from the center onto the screen border. LED strips are laid out around the screen.
 3. **Capture**: DXGI Desktop Duplication hands over each frame on the GPU, `GenerateMips` averages it down to about 80×45, and only that tiny image is read. HDR frames (FP16 scRGB) are converted using your *SDR content brightness* setting.
 4. **Output**: colors are smoothed and sent in `LampMultiUpdateReport`s after switching the device out of `AutonomousMode`, which is restored on exit.
+5. **Music**: WASAPI loopback reads what the default output plays; 30 times a second a 512-point FFT splits it into 14 frequency bands, with an automatic gain and beat detection, all in plain Python.
 
 The whole program is one readable file: [`glowback.py`](glowback.py).
 
@@ -229,6 +256,9 @@ Yes. DXGI capture handles fullscreen and borderless games, video players and HDR
 ### Does it slow down my games?
 It is built not to: the GPU does the downscaling, and Glowback uses about 0.5 ms of CPU per frame at 30 fps.
 
+### Can the LEDs follow my music?
+Yes. Choose the **Music** look: the LEDs pulse, show the spectrum or send waves with the sound your PC plays, from any app. To switch to it by itself, add a profile on the Profiles page: for example *Spotify · Plays sound · Music*.
+
 ### Nothing lights up.
 Check that the monitor's USB upstream cable is connected to the PC, that its RGB lighting is enabled in the monitor's menu, and that Windows Dynamic Lighting is off for that device. The tray menu status and `glowback --list` show what Glowback sees.
 
@@ -243,6 +273,7 @@ Use *Test the LEDs* in the Start menu (or `glowback --test`). If left and right 
 - [x] 6 languages
 - [x] Home Assistant, and through it Google Assistant, Alexa and Siri
 - [x] Sync conditions: an app running, in front or full screen, on a given screen
+- [x] Color, gradient and music looks; night and per-app profiles
 - [ ] Code-signed installer and `winget install Glowback`
 - [ ] Rotated (portrait) screens in DXGI capture
 - [ ] Prebuilt RP2040 firmware (.uf2)
@@ -255,7 +286,7 @@ If Glowback lit up your desk, **star the repo**. It helps other owners of RGB mo
 
 ---
 
-<sub>Keywords: ambient light PC, monitor ambient lighting, screen sync RGB, bias lighting, monitor RGB sync with screen, gaming monitor RGB, Windows 11 Dynamic Lighting, HID LampArray, OpenRGB screen sync, rear RGB monitor, immersive lighting, HDR ambient light, ambilight alternative for PC, Hyperion alternative, Prismatik alternative, Home Assistant ambient light, Apple HomeKit, Siri.</sub>
+<sub>Keywords: ambient light PC, monitor ambient lighting, screen sync RGB, bias lighting, monitor RGB sync with screen, gaming monitor RGB, Windows 11 Dynamic Lighting, HID LampArray, OpenRGB screen sync, rear RGB monitor, immersive lighting, HDR ambient light, ambilight alternative for PC, Hyperion alternative, Prismatik alternative, Home Assistant ambient light, Apple HomeKit, Siri, music reactive lighting, sound reactive RGB, audio visualizer LEDs.</sub>
 
 <sub>Ambilight is a trademark of Koninklijke Philips N.V. / TP Vision. Other product names are trademarks of their respective owners. Glowback is an independent open-source project, not affiliated with or endorsed by them. Inter is licensed under the [SIL Open Font License](licenses/Inter-OFL.txt).</sub>
 

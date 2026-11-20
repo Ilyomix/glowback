@@ -33,7 +33,8 @@ O Glowback não depende de nenhuma marca: ele controla qualquer dispositivo que 
 - 🎬 **Filmes, jogos e HDR**: captura pela GPU (DXGI) em tela cheia, compatível com HDR, **ignora as barras pretas**.
 - 💡 **Cores brilhantes e fiéis**, mesmo em cenas escuras.
 - 🪟 **Um app de Windows de verdade**: uma janela com uma prévia ao vivo dos seus LEDs, ajustes rápidos pelo ícone ao lado do relógio, instalador, menu Iniciar, inicialização com o Windows e desinstalação limpa em *Configurações → Aplicativos*.
-- ⏳ **Sincronize só quando quiser**: enquanto um app está aberto, em primeiro plano ou em tela cheia, na tela que você escolher. No resto do tempo, os LEDs mantêm o próprio efeito.
+- 🎨 **Cores, degradês e música**: além da tela, uma cor, um degradê (parado ou em movimento), ou LEDs que seguem o som do seu PC: pulso, espectro ou ondas.
+- 🌙 **Perfis**: uma luz mais suave à noite, nos horários que você escolher, e um clima para cada app: música enquanto o Spotify toca, a tela para os jogos, azul no seu editor de código.
 - 🔄 **Aviso de atualizações** uma vez por dia (pode ser desativado).
 - 🏠 **Home Assistant, Google Assistente, Alexa e Siri**: o Glowback aparece como uma luz controlada pelos painéis, automações ou por voz.
 - 🌍 **6 idiomas**, conforme o idioma do Windows.
@@ -62,15 +63,15 @@ Testado com: AOC AGON PRO AG276QZD2 (47 LEDs). Funciona no seu monitor? [Conte p
 
 ## 🪟 O app
 
-Ao abrir o Glowback pelo menu Iniciar, a janela dele aparece: **Luz ambiente** (prévia ao vivo, liga/desliga, modo, brilho), **Quando sincronizar**, **Home Assistant**, **Configurações** (iniciar com o Windows, atualizações, idioma) e **Sobre**. Ao fechá-la, o Glowback continua em segundo plano: clique duas vezes no ícone dele ao lado do relógio para reabri-la, ou uma vez para o painel rápido.
+Ao abrir o Glowback pelo menu Iniciar, a janela dele aparece: **Luz ambiente** (prévia ao vivo da sua tela e dos seus LEDs, liga/desliga, clima, brilho), **Perfis**, **Home Assistant**, **Configurações** (iniciar com o Windows, atualizações, idioma) e **Sobre**. Ao fechá-la, o Glowback continua em segundo plano: clique duas vezes no ícone dele ao lado do relógio para reabri-la, ou uma vez para o painel rápido.
 
-## ⏳ Quando sincronizar
+## 🎨 Climas e perfis
 
-Por padrão, o Glowback acompanha a tela o tempo todo. Na página **Quando sincronizar**, adicione condições (um app; quando: aberto, em primeiro plano ou em tela cheia; e em qual tela): o Glowback só acompanha a tela enquanto uma delas for atendida, e no resto do tempo os LEDs mostram o próprio efeito. Por exemplo: o VLC em primeiro plano, ou qualquer app em tela cheia na tela dos LEDs. [Guia completo (em inglês)](README.md#-when-to-sync).
+Na página **Luz ambiente**, escolha o que os LEDs mostram: a **tela** (cada LED a sua zona, ou uma cor média), uma **cor**, um **degradê** (de 2 a 4 cores, parado ou em movimento) ou a **música**: os LEDs seguem o som que o seu PC toca (pulso, espectro ou ondas), sem microfone e sem gravar nada. Na página **Perfis**, o clima muda sozinho: um **perfil noturno** (horário, brilho e clima), um clima **por app** (enquanto está aberto, em primeiro plano, em tela cheia ou tocando som) e o que fazer **no resto do tempo**. Por exemplo: música enquanto o Spotify toca, a tela para os jogos em tela cheia. [Guia completo (em inglês)](README.md#-looks).
 
 ## 🏠 Home Assistant e Google Assistente
 
-O Glowback pode aparecer no Home Assistant como uma luz (liga/desliga, brilho e modo), controlada pelos painéis, pelas automações, pelo Google Assistente, pela Alexa e pela Siri (app Casa da Apple, com a integração HomeKit Bridge do Home Assistant). Instale o app **Mosquitto broker** no Home Assistant e, no painel do Glowback, clique em **Home Assistant** e informe o endereço, o usuário e a senha. [Guia completo (em inglês)](README.md#-home-assistant--google-assistant).
+O Glowback pode aparecer no Home Assistant como uma luz (liga/desliga, brilho, cor e modo), controlada pelos painéis, pelas automações, pelo Google Assistente, pela Alexa e pela Siri (app Casa da Apple, com a integração HomeKit Bridge do Home Assistant). Instale o app **Mosquitto broker** no Home Assistant e, no painel do Glowback, clique em **Home Assistant** e informe o endereço, o usuário e a senha. [Guia completo (em inglês)](README.md#-home-assistant--google-assistant).
 
 ## 🗑️ Desinstalar
 
