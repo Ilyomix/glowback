@@ -115,7 +115,7 @@ portuguese.CheckUpdates=Procurar uma nova versão uma vez por dia (no GitHub; ap
 
 [Tasks]
 Name: "autostart"; Description: "{cm:AutoStartProgram,Glowback}"; GroupDescription: "{cm:AutoStartProgramGroupDescription}"
-Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
+Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"
 ; Shown during installation as SignPath Foundation's terms ask for anything that contacts a server (PRIVACY.md)
 Name: "checkupdates"; Description: "{cm:CheckUpdates}"; GroupDescription: "{cm:UpdatesGroup}"
 
@@ -123,6 +123,12 @@ Name: "checkupdates"; Description: "{cm:CheckUpdates}"; GroupDescription: "{cm:U
 Source: "..\dist\Glowback\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "..\dist\glowback.exe"; DestDir: "{app}"; DestName: "glowback-cli.exe"; Flags: ignoreversion
 Source: "..\LICENSE"; DestDir: "{app}"; DestName: "LICENSE.txt"; Flags: ignoreversion
+
+[InstallDelete]
+; "glowback --install" from pip made this Start menu shortcut to python glowback.py. Under the same name as the
+; installed app's, it opened the old version, which quits silently while Glowback runs: the window never showed.
+; For an install for the current user only, it is the same path as the shortcut below, which is made again.
+Type: files; Name: "{userprograms}\Glowback.lnk"
 
 [Icons]
 Name: "{autoprograms}\Glowback"; Filename: "{app}\Glowback.exe"; Comment: "{cm:Comment}"
@@ -146,8 +152,22 @@ Filename: "{app}\Glowback.exe"; Parameters: "--after-update"; Flags: nowait; Che
 Filename: "{app}\Glowback.exe"; Parameters: "--uninstall"; RunOnceId: "GlowbackCleanup"; Flags: runhidden waituntilterminated
 
 [Code]
+const
+  RunKey = 'Software\Microsoft\Windows\CurrentVersion\Run';
+
 var
   UpdateTaskShown: Boolean;
+
+procedure CurStepChanged(CurStep: TSetupStep);
+var
+  Command: String;
+begin
+  { The pip version started python glowback.py with Windows, under the same name: start the installed app instead }
+  if (CurStep = ssPostInstall) and RegQueryStringValue(HKCU, RunKey, 'Glowback', Command) and
+     ((Pos('pythonw', Lowercase(Command)) > 0) or (Pos('glowback.py', Lowercase(Command)) > 0)) then
+    RegWriteStringValue(HKCU, RunKey, 'Glowback',
+      '"' + ExpandConstant('{app}\Glowback.exe') + '" --background --from-autostart');
+end;
 
 function ShouldRelaunch: Boolean;
 begin
