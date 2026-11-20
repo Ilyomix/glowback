@@ -18,6 +18,10 @@
 </p>
 
 <p align="center">
+  <a href="https://apps.microsoft.com/detail/9P1G8XDDQCN2"><img src="https://get.microsoft.com/images/en-us%20dark.svg" width="200" alt="Get it from Microsoft"></a>
+</p>
+
+<p align="center">
   <a href="https://github.com/Ilyomix/glowback/releases/latest/download/GlowbackSetup.exe"><b>⬇ Download for Windows</b></a>
   &nbsp;·&nbsp; <a href="https://ilyomix.github.io/glowback/"><b>Website</b></a>
 </p>
@@ -57,7 +61,8 @@ Glowback is not tied to one brand. It drives any LED device that **Windows Dynam
 
 | | |
 |---|---|
-| **Installer (recommended)** | Download [**GlowbackSetup.exe**](https://github.com/Ilyomix/glowback/releases/latest/download/GlowbackSetup.exe) and follow the wizard. No admin rights needed. |
+| **Microsoft Store (recommended)** | [**Get Glowback from the Microsoft Store**](https://apps.microsoft.com/detail/9P1G8XDDQCN2): Windows installs it and keeps it up to date, with no SmartScreen warning. |
+| Installer | Download [**GlowbackSetup.exe**](https://github.com/Ilyomix/glowback/releases/latest/download/GlowbackSetup.exe) and follow the wizard. No admin rights needed. |
 | Portable | [GlowbackTray.exe](https://github.com/Ilyomix/glowback/releases/latest/download/GlowbackTray.exe) (app) and [glowback.exe](https://github.com/Ilyomix/glowback/releases/latest/download/glowback.exe) (command line) |
 | Python 3.9+ | `pip install git+https://github.com/Ilyomix/glowback`, then `glowback --install` |
 

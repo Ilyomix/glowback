@@ -18,6 +18,10 @@
 </p>
 
 <p align="center">
+  <a href="https://apps.microsoft.com/detail/9P1G8XDDQCN2"><img src="https://get.microsoft.com/images/fr%20dark.svg" width="200" alt="Obtenir sur le Microsoft Store"></a>
+</p>
+
+<p align="center">
   <a href="https://github.com/Ilyomix/glowback/releases/latest/download/GlowbackSetup.exe"><b>⬇ Télécharger pour Windows</b></a>
   &nbsp;·&nbsp; <a href="https://ilyomix.github.io/glowback/fr/"><b>Site web</b></a>
 </p>
@@ -57,7 +61,8 @@ Glowback n'est lié à aucune marque. Il pilote tout appareil que l'**Éclairage
 
 | | |
 |---|---|
-| **Installateur (recommandé)** | Téléchargez [**GlowbackSetup.exe**](https://github.com/Ilyomix/glowback/releases/latest/download/GlowbackSetup.exe) et suivez l'assistant. Pas besoin de droits administrateur. |
+| **Microsoft Store (recommandé)** | [**Obtenez Glowback sur le Microsoft Store**](https://apps.microsoft.com/detail/9P1G8XDDQCN2) : Windows l'installe et le tient à jour, sans avertissement SmartScreen. |
+| Installateur | Téléchargez [**GlowbackSetup.exe**](https://github.com/Ilyomix/glowback/releases/latest/download/GlowbackSetup.exe) et suivez l'assistant. Pas besoin de droits administrateur. |
 | Portable | [GlowbackTray.exe](https://github.com/Ilyomix/glowback/releases/latest/download/GlowbackTray.exe) (application) et [glowback.exe](https://github.com/Ilyomix/glowback/releases/latest/download/glowback.exe) (ligne de commande) |
 | Python 3.9+ | `pip install git+https://github.com/Ilyomix/glowback`, puis `glowback --install` |
 

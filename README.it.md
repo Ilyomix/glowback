@@ -18,6 +18,10 @@
 </p>
 
 <p align="center">
+  <a href="https://apps.microsoft.com/detail/9P1G8XDDQCN2"><img src="https://get.microsoft.com/images/it%20dark.svg" width="200" alt="Scarica da Microsoft Store"></a>
+</p>
+
+<p align="center">
   <a href="https://github.com/Ilyomix/glowback/releases/latest/download/GlowbackSetup.exe"><b>⬇ Scarica per Windows</b></a>
   &nbsp;·&nbsp; <a href="https://ilyomix.github.io/glowback/it/"><b>Sito web</b></a>
 </p>
@@ -51,7 +55,7 @@ Glowback non è legato a nessuna marca: controlla qualsiasi dispositivo gestibil
 
 1. **Collega il cavo USB upstream del monitor** al PC (USB-B o USB-C).
 2. **Disattiva l'Illuminazione dinamica di Windows per quel dispositivo**: *Impostazioni → Personalizzazione → Illuminazione dinamica → il tuo dispositivo → «Usa Illuminazione dinamica nei miei dispositivi» → Disattivato*.
-3. **Scarica [GlowbackSetup.exe](https://github.com/Ilyomix/glowback/releases/latest/download/GlowbackSetup.exe)** e segui la procedura guidata (non servono diritti di amministratore).
+3. **Installa Glowback da [Microsoft Store](https://apps.microsoft.com/detail/9P1G8XDDQCN2)**: Windows lo installa e lo tiene aggiornato, senza avvisi di SmartScreen. Oppure scarica [GlowbackSetup.exe](https://github.com/Ilyomix/glowback/releases/latest/download/GlowbackSetup.exe) e segui la procedura guidata (non servono diritti di amministratore).
 
 Ogni versione è compilata da [GitHub Actions](.github/workflows/release.yml) a partire da questo codice sorgente, testata (installazione e disinstallazione comprese) e pubblicata con checksum SHA-256.
 
