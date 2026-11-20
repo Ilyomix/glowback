@@ -68,7 +68,7 @@ Glowback n'est lié à aucune marque. Il pilote tout appareil que l'**Éclairage
 | Portable | [GlowbackTray.exe](https://github.com/Ilyomix/glowback/releases/latest/download/GlowbackTray.exe) (application) et [glowback.exe](https://github.com/Ilyomix/glowback/releases/latest/download/glowback.exe) (ligne de commande) |
 | Python 3.9+ | `pip install git+https://github.com/Ilyomix/glowback`, puis `glowback --install` |
 
-> Windows SmartScreen peut signaler un éditeur inconnu, car l'application n'est pas encore signée. Cliquez sur *Informations complémentaires → Exécuter quand même*. Le code source et les versions compilées sont publics sur GitHub. [Politique de signature du code](CODE_SIGNING.md) · [Confidentialité](PRIVACY.md)
+> **Signature du code** : Glowback demande la signature gratuite de [SignPath Foundation](https://signpath.org/) pour les projets open source ; les fichiers Windows seront signés par ce biais dès que le projet sera accepté. D'ici là, Windows SmartScreen peut signaler un éditeur inconnu : cliquez sur *Informations complémentaires → Exécuter quand même*. Le code source et les versions compilées sont publics sur GitHub. [Politique de signature du code](CODE_SIGNING.md) · [Confidentialité](PRIVACY.md)
 
 Glowback s'installe ensuite près de l'horloge. Pour vérifier l'orientation des LED : *menu Démarrer → Outils Glowback → Tester les LED*. La gauche doit être rouge, la droite bleue.
 

@@ -36,7 +36,7 @@ Changes from anyone else arrive as pull requests, which a committer reviews befo
 
 ## Privacy
 
-Glowback has no telemetry and collects no personal data. The only request it makes on its own is a daily update check on GitHub, which can be turned off in the installer and in the app. Other connections stay on your PC or go where you point Glowback: OpenRGB, and your own Home Assistant once you connect it. Details in the [privacy policy](PRIVACY.md).
+Glowback has no telemetry and collects no personal data. The only request it makes on its own is a daily update check on GitHub, which can be turned off in the installer and in the app. Other connections stay on your PC or your home network, or go where you point Glowback: OpenRGB, your own Home Assistant once you connect it, and the Matter apps you pair (Apple Home, Google Home…) once you turn Matter on. Details in the [privacy policy](PRIVACY.md).
 
 ## Check a file
 

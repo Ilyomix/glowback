@@ -69,7 +69,7 @@ Glowback is not tied to one brand. It drives any LED device that **Windows Dynam
 | Portable | [GlowbackTray.exe](https://github.com/Ilyomix/glowback/releases/latest/download/GlowbackTray.exe) (app) and [glowback.exe](https://github.com/Ilyomix/glowback/releases/latest/download/glowback.exe) (command line) |
 | Python 3.9+ | `pip install git+https://github.com/Ilyomix/glowback`, then `glowback --install` |
 
-> Windows SmartScreen may warn about an unknown publisher, because the app is not code-signed yet. Click *More info → Run anyway*. The source code and the builds are public on GitHub. [Code signing policy](CODE_SIGNING.md) · [Privacy policy](PRIVACY.md)
+> **Code signing**: Glowback is applying for [SignPath Foundation](https://signpath.org/)'s free code signing for open source; the Windows files will be signed through it once the project is accepted. Until then Windows SmartScreen may warn about an unknown publisher: click *More info → Run anyway*. The source code and the builds are public on GitHub. [Code signing policy](CODE_SIGNING.md) · [Privacy policy](PRIVACY.md)
 
 Glowback then sits next to the clock. To check the LED orientation, use *Start menu → Glowback tools → Test the LEDs*: left must be red, right blue.
 
