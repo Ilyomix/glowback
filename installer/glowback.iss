@@ -146,10 +146,16 @@ Filename: "{app}\glowback-cli.exe"; Parameters: "--check-updates {code:UpdateChe
 Filename: "{app}\Glowback.exe"; Description: "{cm:LaunchProgram,Glowback}"; Flags: nowait postinstall skipifsilent
 ; In-app updates run this installer silently with /RELAUNCH=1: start the new version afterwards
 Filename: "{app}\Glowback.exe"; Parameters: "--after-update"; Flags: nowait; Check: ShouldRelaunch
+; Phones on the same network reach the Matter light (Apple Home, Google Home...): local subnet only, whatever type
+; Windows gave the network (many homes are "Public"). An install for the current user only can't add the rule:
+; Windows then asks the first time Matter is turned on.
+Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""Glowback (Matter)"""; Flags: runhidden waituntilterminated; Check: IsAdminInstallMode
+Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall add rule name=""Glowback (Matter)"" dir=in action=allow protocol=UDP program=""{app}\Glowback.exe"" remoteip=localsubnet profile=any enable=yes"; Flags: runhidden waituntilterminated; Check: IsAdminInstallMode
 
 [UninstallRun]
 ; Stops Glowback (LEDs go back to the monitor's own effect) and removes startup entry, settings and logs
 Filename: "{app}\Glowback.exe"; Parameters: "--uninstall"; RunOnceId: "GlowbackCleanup"; Flags: runhidden waituntilterminated
+Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""Glowback (Matter)"""; RunOnceId: "GlowbackFirewall"; Flags: runhidden waituntilterminated; Check: IsAdminInstallMode
 
 [Code]
 const

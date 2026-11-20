@@ -48,6 +48,7 @@ Glowback n'est lié à aucune marque. Il pilote tout appareil que l'**Éclairage
 - 🪟 **Une vraie application Windows** : une fenêtre avec un aperçu en direct de votre écran et de vos LED, des réglages rapides depuis l'icône près de l'horloge, installateur, menu Démarrer, lancement au démarrage et désinstallation propre depuis *Paramètres → Applications*.
 - 🌙 **Profils** : une lumière plus douce la nuit, aux heures de votre choix, et une ambiance par app : la musique quand Spotify joue, l'écran pour les jeux, du bleu dans votre éditeur de code. Ou ne suivre l'écran que quand une app est ouverte.
 - 🔄 **Mises à jour signalées** : Glowback vérifie GitHub une fois par jour et vous prévient quand une nouvelle version sort. Un interrupteur permet de le désactiver.
+- 📱 **Apple Maison, Google Home et Alexa, sans Home Assistant** : avec Matter, Glowback est une lampe dans l'app Maison de votre téléphone. Allumez-la, réglez sa luminosité et sa couleur à la main, dans des scènes ou à la voix.
 - 🏠 **Home Assistant, Google Assistant, Alexa et Siri** : Glowback apparaît comme une lumière à allumer, régler et colorer depuis vos tableaux de bord, vos automatisations ou à la voix.
 - 🌍 **6 langues** : français, anglais, espagnol, allemand, italien, portugais, selon la langue de Windows.
 - 🔌 **Plug and play** : détecte automatiquement les appareils Éclairage dynamique et OpenRGB, et lit la position physique de chaque LED.
@@ -99,6 +100,7 @@ Lancez Glowback depuis le menu Démarrer et sa fenêtre s'ouvre. Fermez-la et Gl
 - **Lumière d'ambiance** : un aperçu en direct de votre écran et de la lumière que vos LED projettent sur le mur, l'interrupteur, l'[ambiance](#-ambiances) (écran, moyenne, couleur, dégradé ou musique) et la luminosité
 - **Profils** : un [profil de nuit et une ambiance par app](#-profils)
 - **Home Assistant** : état et réglage de la connexion, ce que voit Home Assistant, assistants vocaux
+- **Apple et Google** : Glowback comme [lampe Matter](#-apple-maison-google-home-et-alexa) dans Apple Maison, Google Home ou Alexa : son code d'appairage et les apps appairées
 - **Paramètres** : lancement au démarrage, mises à jour (tout de suite, ou automatiquement une fois par jour), langue de l'interface, journal
 - **À propos** : version, site web, code source, signaler un problème
 
@@ -182,6 +184,28 @@ automation:
 ```
 
 En ligne de commande : `glowback --home-assistant mqtt://glowback:MOTDEPASSE@homeassistant.local` (`mqtts://` pour TLS sur le port 8883, `off` pour retirer Glowback de Home Assistant).
+
+## 📱 Apple Maison, Google Home et Alexa
+
+Glowback peut aussi être une lampe **Matter**, sans Home Assistant : l'app Maison de votre téléphone l'allume, règle sa luminosité et sa couleur, à la main, dans des scènes et des automatisations, ou à la voix avec Siri, l'Assistant Google ou Alexa.
+
+1. **Dans Glowback** : ouvrez la page **Apple et Google** et activez **Lampe Matter**. Un QR code et un code à 11 chiffres s'affichent pendant 15 minutes. Windows peut demander de laisser passer Glowback dans son pare-feu : autorisez-le (installé pour tous les utilisateurs, Glowback laisse déjà entrer les appareils de votre réseau local).
+2. **Sur votre téléphone**, sur le même réseau que le PC :
+   - **Apple Maison** : touchez **+** → *Ajouter un accessoire* et scannez le QR code (ou *Plus d'options…* et tapez le code). Glowback n'est pas certifié par la Connectivity Standards Alliance, alors Apple Maison indique *Accessoire non certifié* : touchez *Ajouter quand même*.
+   - **Google Home** : Google n'ajoute les appareils non certifiés qu'aux comptes configurés pour les tests. Une fois, dans la [Google Home Developer Console](https://console.home.google.com) : créez un projet, puis une **intégration Matter** avec l'ID fournisseur `0xFFF1` et l'ID produit `0x8000`. Ensuite, dans l'app Google Home connectée au même compte : *Appareils → Ajouter → Appareil compatible Matter*, et scannez le code.
+   - **Autres apps Matter** (Alexa, SmartThings, l'intégration Matter de Home Assistant…) : ajoutez un appareil Matter et scannez le code, si l'app accepte les appareils non certifiés.
+3. **Une deuxième app** (Google Home après Apple Maison, par exemple) : cliquez sur **Appairer un téléphone** dans Glowback et scannez à nouveau depuis l'autre app. Ou partagez la lampe depuis la première app (Apple Maison : réglages de la lampe → *Activer le mode d'appairage*) et tapez ce code dans l'autre.
+
+| Dans l'app du téléphone | Dans Glowback |
+|---|---|
+| Allumer / éteindre | Lumière d'ambiance activée / en pause |
+| Luminosité | Luminosité |
+| Une couleur ou un blanc | L'ambiance Couleur, dans cette couleur |
+| Identifier | Les LED clignotent en blanc |
+
+Les autres ambiances (écran, dégradé, musique) et les profils se choisissent dans Glowback ; le téléphone les allume, les éteint et règle leur luminosité. La lampe apparaît comme indisponible quand le PC est en veille ou Glowback fermé.
+
+Tout reste sur votre réseau : Glowback répond sur le port UDP 5540 et s'annonce en mDNS (port 5353). Il garde ses appairages dans `%LOCALAPPDATA%\Glowback\matter.json`, clés chiffrées pour votre compte Windows. Pour désappairer une app, cliquez sur **Retirer** à côté d'elle ; pour cacher la lampe, désactivez Matter.
 
 ## 🗑️ Désinstaller
 

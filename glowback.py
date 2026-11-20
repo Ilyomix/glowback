@@ -19,13 +19,20 @@ Single file, zero dependencies, pure Python + Win32 (ctypes).
 https://github.com/Ilyomix/glowback  -  MIT License
 """
 import argparse
+import base64
 import cmath
 import colorsys
 import ctypes
 import ctypes.wintypes as wt
+import hashlib
+import hmac
 import json
 import math
 import os
+import queue
+import random
+import re
+import select
 import socket
 import struct
 import subprocess
@@ -36,7 +43,7 @@ from array import array
 from ctypes import byref, sizeof
 from operator import itemgetter, mul
 
-__version__ = "0.6.1"
+__version__ = "0.7.0"
 
 if sys.platform != "win32":
     sys.exit("Glowback runs on Windows 10/11 (it drives HID LampArray / Dynamic Lighting devices).")
@@ -1838,6 +1845,9 @@ class State:
     def __init__(self, args, enabled=True):
         saved = load_settings()
         self.enabled = enabled
+        # switched off from a phone or Home Assistant: Glowback keeps the LEDs, dark (pausing hands them back to the
+        # device's own effect instead). Kept across a restart at sign-in; started by hand, the light comes back.
+        self.dark = bool(saved.get("dark")) and bool(getattr(args, "from_autostart", False))
         self.mode = args.mode if args.mode in MODES else "zones"
         self.brightness = max(0.0, min(100.0, float(args.brightness)))
         self.color = hex_color(getattr(args, "color", None), hex_color(saved.get("color"), DEFAULT_COLOR))
@@ -1865,6 +1875,7 @@ class State:
         self.preview = []          # [(lamp positions 0..1, colors)] per device, for the app's live preview
         self.thumb, self.thumb_want = None, -99.0  # the LED screen's picture, while the app asks for it
         self.sound = None          # Music look: "on" (something plays), "silent", or None (not listening)
+        self.identify_until = 0.0  # a phone's app asked the light to show itself (Matter "Identify") until then
         self.notify = lambda: None  # the tray: something shown in the app or the panel changed
         self.rule_hit = None
         self.active = self.resolve(None)
@@ -1874,7 +1885,7 @@ class State:
         for k, v in kw.items():
             setattr(self, k, v)
         self.version += 1
-        saved = {"enabled": self.enabled, "mode": self.mode, "brightness": self.brightness,
+        saved = {"enabled": self.enabled, "dark": self.dark, "mode": self.mode, "brightness": self.brightness,
                  "color": color_hex(self.color), "gradient": [color_hex(c) for c in self.gradient], "flow": self.flow,
                  "music": {"style": self.music_style, "palette": self.music_palette, "sensitivity": self.sensitivity}}
         if "check_updates" in kw:  # only when switched here: the installer and --check-updates also set it
@@ -1882,6 +1893,17 @@ class State:
         save_settings(saved)
         self._activate(self.rule_hit)
         self.notify()
+
+    def lit(self):
+        """The ambient light shows (neither paused nor switched off)."""
+        return self.enabled and not self.dark
+
+    def switch(self):
+        """The app's and the panel's on/off switch: pause (the LEDs go back to the device), or light up again."""
+        if self.lit():
+            self.update(enabled=False)
+        else:
+            self.update(enabled=True, dark=False)
 
     # ---- profiles: the night, the apps, and what to show the rest of the time
     def base_look(self):
@@ -1913,6 +1935,8 @@ class State:
                 look = hit["look"]
         elif self.rules and self.otherwise != "auto":
             look, source = {"mode": self.otherwise}, "rest"
+        if getattr(self, "dark", False):  # switched off from a phone or Home Assistant: over any profile
+            look = {"mode": "off"}
         return {"source": source, "rule": hit, "night": night, "look": self.full_look(look), "brightness": bright}
 
     def _activate(self, rule):
@@ -2297,9 +2321,15 @@ def run(args, stop, state=None):
                         targets = music_colors(o.geo, an, look["style"], colors, b, t0)
                 else:  # off: the LEDs stay dark
                     targets = [(0.0, 0.0, 0.0)]
+                now = time.monotonic()
+                if state.identify_until > now:  # "Identify" from a phone's app: white blinks, twice a second
+                    v = 255.0 if now % 0.5 < 0.25 else 0.0
+                    targets = [(v, v, v)]
 
                 tau = args.smoothing
-                if t0 < fade_until:
+                if state.identify_until > now:
+                    tau = 0.0  # crisp blinks
+                elif t0 < fade_until:
                     tau = max(tau, 0.3)
                 elif mode == "music":
                     tau = min(tau, 0.03)
@@ -2547,6 +2577,31 @@ STRINGS = {
         'sync_remove': 'Remove',
         'sync_programs': 'Programs',
         'home_sub': 'Switch the ambient light from Home Assistant, its automations and your voice assistant.',
+        'nav_matter': 'Apple & Google',
+        'matter_apple_home': 'Apple Home',
+        'matter_title': 'Apple Home, Google Home and Alexa',
+        'matter_sub': 'Control the ambient light from your phone with Matter: Glowback shows up as a light in Apple Home, Google Home, Alexa or SmartThings, without Home Assistant.',
+        'matter_toggle': 'Matter light',
+        'matter_off_desc': "Off: phones don't see Glowback",
+        'matter_failed': 'Could not start: see the log',
+        'matter_on_count': 'On · paired apps: {n}',
+        'matter_on_none': 'On · ready to pair',
+        'matter_pair': 'Pair',
+        'matter_scan_title': 'Scan with your phone',
+        'matter_scan': 'In Apple Home, Google Home or Alexa, add an accessory or a Matter device, then scan this code. Or type it:',
+        'matter_open_for': 'Pairing open for {min} min',
+        'matter_stop': 'Stop',
+        'matter_other_app': 'Another app is being added to Glowback: carry on in that app ({min} min left).',
+        'matter_closed_desc': 'Open pairing for 15 minutes to add Glowback to Apple Home, Google Home, Alexa or another Matter app. Already paired? Add the next app the same way.',
+        'matter_open': 'Pair a phone',
+        'matter_paired': 'Paired apps',
+        'matter_paired_desc': 'Can switch the light and change its brightness and color',
+        'matter_none': 'No phone or app yet.',
+        'matter_remove': 'Remove',
+        'matter_remove_ask': 'Remove Glowback from {app}? That app will no longer control the light.',
+        'matter_good_to_know': 'Good to know',
+        'matter_notes': 'Glowback is an uncertified Matter light: Apple Home asks you to confirm (Add Anyway), Google Home needs a free test setup first. Your phone and this PC must be on the same network; if Windows asks, allow Glowback.',
+        'matter_controller': 'Matter app',
         'home_connected': 'Connected to {host}',
         'home_not_set': 'Not set up',
         'home_not_set_desc': 'Install the Mosquitto broker app in Home Assistant, then connect Glowback to it.',
@@ -2757,6 +2812,31 @@ STRINGS = {
         'sync_remove': 'Retirer',
         'sync_programs': 'Programmes',
         'home_sub': "Pilotez la lumière d'ambiance depuis Home Assistant, ses automatisations et votre assistant vocal.",
+        'nav_matter': 'Apple et Google',
+        'matter_apple_home': 'Apple Maison',
+        'matter_title': 'Apple Maison, Google Home et Alexa',
+        'matter_sub': "Pilotez la lumière d'ambiance depuis votre téléphone avec Matter : Glowback apparaît comme une lampe dans Apple Maison, Google Home, Alexa ou SmartThings, sans Home Assistant.",
+        'matter_toggle': 'Lampe Matter',
+        'matter_off_desc': 'Désactivée : les téléphones ne voient pas Glowback',
+        'matter_failed': 'Démarrage impossible : voir le journal',
+        'matter_on_count': 'Activée · apps appairées : {n}',
+        'matter_on_none': 'Activée · prête à être appairée',
+        'matter_pair': 'Appairer',
+        'matter_scan_title': 'Scannez avec votre téléphone',
+        'matter_scan': 'Dans Apple Maison, Google Home ou Alexa, ajoutez un accessoire ou un appareil Matter, puis scannez ce code. Ou tapez-le :',
+        'matter_open_for': 'Appairage ouvert encore {min} min',
+        'matter_stop': 'Arrêter',
+        'matter_other_app': "Une autre app est en train d'être ajoutée à Glowback : continuez dans cette app ({min} min restantes).",
+        'matter_closed_desc': "Ouvrez l'appairage pendant 15 minutes pour ajouter Glowback à Apple Maison, Google Home, Alexa ou une autre app Matter. Déjà appairée ? Ajoutez l'app suivante de la même façon.",
+        'matter_open': 'Appairer un téléphone',
+        'matter_paired': 'Apps appairées',
+        'matter_paired_desc': 'Peut allumer la lumière, régler sa luminosité et sa couleur',
+        'matter_none': "Aucun téléphone ni aucune app pour l'instant.",
+        'matter_remove': 'Retirer',
+        'matter_remove_ask': 'Retirer Glowback de {app} ? Cette app ne pourra plus piloter la lumière.',
+        'matter_good_to_know': 'Bon à savoir',
+        'matter_notes': "Glowback est une lampe Matter non certifiée : Apple Maison vous demande de confirmer (Ajouter quand même), Google Home demande d'abord une configuration de test gratuite. Votre téléphone et ce PC doivent être sur le même réseau ; si Windows le demande, autorisez Glowback.",
+        'matter_controller': 'App Matter',
         'home_connected': 'Connecté à {host}',
         'home_not_set': 'Pas encore configuré',
         'home_not_set_desc': "Installez l'application Mosquitto broker dans Home Assistant, puis connectez-y Glowback.",
@@ -2967,6 +3047,31 @@ STRINGS = {
         'sync_remove': 'Quitar',
         'sync_programs': 'Programas',
         'home_sub': 'Controla la luz ambiental desde Home Assistant, sus automatizaciones y tu asistente de voz.',
+        'nav_matter': 'Apple y Google',
+        'matter_apple_home': 'Apple Casa',
+        'matter_title': 'Apple Casa, Google Home y Alexa',
+        'matter_sub': 'Controla la luz ambiental desde tu teléfono con Matter: Glowback aparece como una luz en Apple Casa, Google Home, Alexa o SmartThings, sin Home Assistant.',
+        'matter_toggle': 'Luz Matter',
+        'matter_off_desc': 'Desactivada: los teléfonos no ven Glowback',
+        'matter_failed': 'No se pudo iniciar: mira el registro',
+        'matter_on_count': 'Activada · apps vinculadas: {n}',
+        'matter_on_none': 'Activada · lista para vincular',
+        'matter_pair': 'Vincular',
+        'matter_scan_title': 'Escanea con tu teléfono',
+        'matter_scan': 'En Apple Casa, Google Home o Alexa, añade un accesorio o un dispositivo Matter y escanea este código. O escríbelo:',
+        'matter_open_for': 'Vinculación abierta {min} min más',
+        'matter_stop': 'Detener',
+        'matter_other_app': 'Se está añadiendo otra app a Glowback: continúa en esa app (quedan {min} min).',
+        'matter_closed_desc': 'Abre la vinculación durante 15 minutos para añadir Glowback a Apple Casa, Google Home, Alexa u otra app Matter. ¿Ya vinculada? Añade la siguiente app del mismo modo.',
+        'matter_open': 'Vincular un teléfono',
+        'matter_paired': 'Apps vinculadas',
+        'matter_paired_desc': 'Puede encender la luz y cambiar su brillo y su color',
+        'matter_none': 'Todavía ningún teléfono ni app.',
+        'matter_remove': 'Quitar',
+        'matter_remove_ask': '¿Quitar Glowback de {app}? Esa app ya no podrá controlar la luz.',
+        'matter_good_to_know': 'Conviene saber',
+        'matter_notes': 'Glowback es una luz Matter no certificada: Apple Casa te pide confirmar (Añadir de todos modos) y Google Home necesita antes una configuración de prueba gratuita. Tu teléfono y este PC deben estar en la misma red; si Windows lo pide, permite Glowback.',
+        'matter_controller': 'App Matter',
         'home_connected': 'Conectado a {host}',
         'home_not_set': 'Sin configurar',
         'home_not_set_desc': 'Instala la app Mosquitto broker en Home Assistant y luego conecta Glowback a ella.',
@@ -3177,6 +3282,31 @@ STRINGS = {
         'sync_remove': 'Entfernen',
         'sync_programs': 'Programme',
         'home_sub': 'Steuere das Umgebungslicht aus Home Assistant, seinen Automationen und deinem Sprachassistenten.',
+        'nav_matter': 'Apple & Google',
+        'matter_apple_home': 'Apple Home',
+        'matter_title': 'Apple Home, Google Home und Alexa',
+        'matter_sub': 'Steuere das Umgebungslicht mit Matter von deinem Handy: Glowback erscheint als Lampe in Apple Home, Google Home, Alexa oder SmartThings, ohne Home Assistant.',
+        'matter_toggle': 'Matter-Lampe',
+        'matter_off_desc': 'Aus: Handys sehen Glowback nicht',
+        'matter_failed': 'Start nicht möglich: siehe Protokoll',
+        'matter_on_count': 'An · gekoppelte Apps: {n}',
+        'matter_on_none': 'An · bereit zum Koppeln',
+        'matter_pair': 'Koppeln',
+        'matter_scan_title': 'Mit dem Handy scannen',
+        'matter_scan': 'Füge in Apple Home, Google Home oder Alexa ein Zubehör oder Matter-Gerät hinzu und scanne diesen Code. Oder tippe ihn ein:',
+        'matter_open_for': 'Kopplung noch {min} Min. offen',
+        'matter_stop': 'Beenden',
+        'matter_other_app': 'Eine weitere App wird zu Glowback hinzugefügt: mach in dieser App weiter (noch {min} Min.).',
+        'matter_closed_desc': 'Öffne die Kopplung für 15 Minuten, um Glowback zu Apple Home, Google Home, Alexa oder einer anderen Matter-App hinzuzufügen. Schon gekoppelt? Füge die nächste App genauso hinzu.',
+        'matter_open': 'Handy koppeln',
+        'matter_paired': 'Gekoppelte Apps',
+        'matter_paired_desc': 'Kann das Licht schalten und Helligkeit und Farbe ändern',
+        'matter_none': 'Noch kein Handy und keine App.',
+        'matter_remove': 'Entfernen',
+        'matter_remove_ask': 'Glowback aus {app} entfernen? Diese App kann das Licht dann nicht mehr steuern.',
+        'matter_good_to_know': 'Gut zu wissen',
+        'matter_notes': 'Glowback ist eine nicht zertifizierte Matter-Lampe: Apple Home bittet um Bestätigung (Trotzdem hinzufügen), Google Home braucht vorher eine kostenlose Test-Einrichtung. Handy und PC müssen im selben Netzwerk sein; wenn Windows fragt, lass Glowback zu.',
+        'matter_controller': 'Matter-App',
         'home_connected': 'Verbunden mit {host}',
         'home_not_set': 'Nicht eingerichtet',
         'home_not_set_desc': 'Installiere in Home Assistant die App Mosquitto broker und verbinde Glowback damit.',
@@ -3387,6 +3517,31 @@ STRINGS = {
         'sync_remove': 'Rimuovi',
         'sync_programs': 'Programmi',
         'home_sub': 'Comanda la luce ambientale da Home Assistant, dalle sue automazioni e dal tuo assistente vocale.',
+        'nav_matter': 'Apple e Google',
+        'matter_apple_home': 'Apple Casa',
+        'matter_title': 'Apple Casa, Google Home e Alexa',
+        'matter_sub': 'Comanda la luce ambientale dal telefono con Matter: Glowback appare come una luce in Apple Casa, Google Home, Alexa o SmartThings, senza Home Assistant.',
+        'matter_toggle': 'Luce Matter',
+        'matter_off_desc': 'Spenta: i telefoni non vedono Glowback',
+        'matter_failed': 'Avvio non riuscito: vedi il log',
+        'matter_on_count': 'Attiva · app associate: {n}',
+        'matter_on_none': "Attiva · pronta per l'associazione",
+        'matter_pair': 'Associa',
+        'matter_scan_title': 'Scansiona con il telefono',
+        'matter_scan': 'In Apple Casa, Google Home o Alexa aggiungi un accessorio o un dispositivo Matter, poi scansiona questo codice. Oppure digitalo:',
+        'matter_open_for': 'Associazione aperta ancora {min} min',
+        'matter_stop': 'Interrompi',
+        'matter_other_app': "Un'altra app viene aggiunta a Glowback: continua in quell'app (ancora {min} min).",
+        'matter_closed_desc': "Apri l'associazione per 15 minuti per aggiungere Glowback ad Apple Casa, Google Home, Alexa o un'altra app Matter. Già associata? Aggiungi l'app successiva allo stesso modo.",
+        'matter_open': 'Associa un telefono',
+        'matter_paired': 'App associate',
+        'matter_paired_desc': 'Può accendere la luce e cambiarne luminosità e colore',
+        'matter_none': 'Ancora nessun telefono né app.',
+        'matter_remove': 'Rimuovi',
+        'matter_remove_ask': "Rimuovere Glowback da {app}? Quell'app non potrà più comandare la luce.",
+        'matter_good_to_know': 'Da sapere',
+        'matter_notes': 'Glowback è una luce Matter non certificata: Apple Casa chiede di confermare (Aggiungi comunque), Google Home richiede prima una configurazione di prova gratuita. Telefono e PC devono essere sulla stessa rete; se Windows lo chiede, consenti Glowback.',
+        'matter_controller': 'App Matter',
         'home_connected': 'Connesso a {host}',
         'home_not_set': 'Non configurato',
         'home_not_set_desc': "Installa l'app Mosquitto broker in Home Assistant, poi collega Glowback.",
@@ -3597,6 +3752,31 @@ STRINGS = {
         'sync_remove': 'Remover',
         'sync_programs': 'Programas',
         'home_sub': 'Controle a luz ambiente pelo Home Assistant, pelas automações dele e pelo seu assistente de voz.',
+        'nav_matter': 'Apple e Google',
+        'matter_apple_home': 'Apple Casa',
+        'matter_title': 'Apple Casa, Google Home e Alexa',
+        'matter_sub': 'Controle a luz ambiente pelo celular com Matter: o Glowback aparece como uma luz no app Casa, no Google Home, na Alexa ou no SmartThings, sem Home Assistant.',
+        'matter_toggle': 'Luz Matter',
+        'matter_off_desc': 'Desligada: os celulares não veem o Glowback',
+        'matter_failed': 'Não foi possível iniciar: veja o log',
+        'matter_on_count': 'Ligada · apps pareados: {n}',
+        'matter_on_none': 'Ligada · pronta para parear',
+        'matter_pair': 'Parear',
+        'matter_scan_title': 'Escaneie com o celular',
+        'matter_scan': 'No app Casa, no Google Home ou na Alexa, adicione um acessório ou dispositivo Matter e escaneie este código. Ou digite:',
+        'matter_open_for': 'Pareamento aberto por mais {min} min',
+        'matter_stop': 'Parar',
+        'matter_other_app': 'Outro app está sendo adicionado ao Glowback: continue nesse app (faltam {min} min).',
+        'matter_closed_desc': 'Abra o pareamento por 15 minutos para adicionar o Glowback ao app Casa, ao Google Home, à Alexa ou a outro app Matter. Já pareado? Adicione o próximo app do mesmo jeito.',
+        'matter_open': 'Parear um celular',
+        'matter_paired': 'Apps pareados',
+        'matter_paired_desc': 'Pode ligar a luz e mudar o brilho e a cor',
+        'matter_none': 'Nenhum celular ou app ainda.',
+        'matter_remove': 'Remover',
+        'matter_remove_ask': 'Remover o Glowback do {app}? Esse app não vai mais controlar a luz.',
+        'matter_good_to_know': 'Bom saber',
+        'matter_notes': 'O Glowback é uma luz Matter não certificada: o app Casa pede para confirmar (Adicionar Mesmo Assim) e o Google Home precisa antes de uma configuração de teste gratuita. O celular e este PC precisam estar na mesma rede; se o Windows perguntar, permita o Glowback.',
+        'matter_controller': 'App Matter',
         'home_connected': 'Conectado a {host}',
         'home_not_set': 'Não configurado',
         'home_not_set_desc': 'Instale o app Mosquitto broker no Home Assistant e conecte o Glowback a ele.',
@@ -4074,6 +4254,7 @@ class MenuPainter:
              "link": ""}
     ICONS.update(dismiss="", quit="", check="", warning="", clock="")
     ICONS.update(home="")
+    ICONS.update(phone="", qr="")  # CellPhone, QRCode
     ICONS.update(filter="", settings="", info="", chev_down="", chev_right="",
                  delete="", globe="", code="", bug="", window="", add="",
                  lang="", mic="", apps="", pause="", search="")
@@ -4763,6 +4944,7 @@ class Tray:
         self.checking, self.check_result, self.check_time = False, None, 0.0  # "check for updates" button
         self.hover = self.hover_seg = None
         self.ha, self.ha_dialog = None, None  # Home Assistant connection and its window
+        self.matter = None  # the Matter light (Apple Home, Google Home...), when it is on
         self._fly_ref = WNDPROC(self._fly_proc)
         fc = WNDCLASSEXW()
         fc.cbSize, fc.lpfnWndProc, fc.hInstance, fc.lpszClassName = sizeof(fc), self._fly_ref, hinst, "GlowbackFlyout"
@@ -4781,8 +4963,8 @@ class Tray:
         n.cbSize, n.hWnd, n.uID, n.uCallbackMessage = sizeof(n), self.hwnd, 1, self.WM_TRAY
         n.uFlags = 0x1 | 0x2 | 0x4  # MESSAGE | ICON | TIP
         s = self.state
-        n.hIcon = self.icons[0 if s.enabled and not s.waiting else 1]
-        n.szTip = tr("tip_off") if not s.enabled else tr("tip_device") if s.waiting else tr("tip_on")
+        n.hIcon = self.icons[0 if s.lit() and not s.waiting else 1]
+        n.szTip = tr("tip_off") if not s.lit() else tr("tip_device") if s.waiting else tr("tip_on")
         if info:
             n.uFlags |= 0x10  # NIF_INFO
             n.szInfoTitle, n.szInfo = info
@@ -4835,6 +5017,21 @@ class Tray:
     def ha_changed(self):
         if self.ha:
             self.ha.reconfigure()
+
+    def matter_toggle(self):
+        """The Matter light on or off (its phones and apps stay paired)."""
+        on = not matter_settings().get("on")
+        save_settings({"matter": dict(matter_settings(), on=on)})
+        if on and not self.matter:
+            self.matter = matter_start(self.state, self.matter_notify)
+        elif not on and self.matter:
+            self.matter.stop()
+            self.matter = None
+            log("Matter: off")
+
+    def matter_notify(self):
+        """Pairing opened or closed, a phone added or removed (Matter's thread): redraw."""
+        user32.PostMessageW(self.hwnd, self.WM_SYNC, 0, 0)
 
     def open_app(self, page=None):
         """Glowback's window, on a page; the panel closes."""
@@ -4966,7 +5163,7 @@ class Tray:
                               accent=True, highlight=True, link=True))
         items += [dict(kind="action", id=29, icon="window", text=tr("open_app")),
                   dict(kind="sep"),
-                  dict(kind="toggle", id=1, icon="light", text=tr("ambilight"), on=s.enabled),
+                  dict(kind="toggle", id=1, icon="light", text=tr("ambilight"), on=s.lit()),
                   dict(kind="action", id=28, icon="layers", text=tr("nav_profiles"), status=self._profile_status(),
                        statuses=(tr("profiles_none"), tr("profiles_many", n=12), tr("night_short"), "Spotify Premium")),
                   dict(kind="toggle", id=20, icon="power", text=tr("start_windows"), on=self.autostart),
@@ -5168,7 +5365,7 @@ class Tray:
             return
         s, cid = self.state, items[i]["id"]
         if cid == 1:  # settings change in place: the panel stays open
-            s.update(enabled=not s.enabled)
+            s.switch()
             self.refresh()
         elif cid == 20:
             set_autostart(not self.autostart, self.argv)
@@ -5389,10 +5586,14 @@ def run_with_tray(args, stop, state, argv):
     t.start()
     threading.Thread(target=update_checker, name="glowback-update", daemon=True,
                      args=(state, stop, lambda: user32.PostMessageW(tray.hwnd, Tray.WM_UPDATE, 0, 0))).start()
+    if matter_settings().get("on"):
+        tray.matter = matter_start(state, tray.matter_notify)
     if not (args.from_autostart or args.after_update):  # by hand (Start menu, installer): the window. At sign-in
         tray.open_app()  # or after an update (maybe started from Home Assistant): in the background
     tray.loop()
     k32.SetEvent(stop.h)
+    if tray.matter:
+        tray.matter.stop()  # phones' apps see Glowback leave the network
     t.join(5)
     for icon in tray.icons:
         user32.DestroyIcon(icon)
@@ -5752,7 +5953,7 @@ class HomeAssistant:
     def _publish_state(self, client):
         s = self.state
         effect = next((k for k, v in HA_EFFECTS.items() if v == s.mode), "Zones")
-        client.publish(self.base + "/state", {"state": "ON" if s.enabled else "OFF", "brightness": round(s.brightness),
+        client.publish(self.base + "/state", {"state": "ON" if s.lit() else "OFF", "brightness": round(s.brightness),
                                               "effect": effect, "color_mode": "rgb",
                                               "color": dict(zip("rgb", rgb(s.color))), "leds": s.leds}, retain=True)
         client.publish(self.base + "/update", {"installed_version": __version__,
@@ -5766,8 +5967,8 @@ class HomeAssistant:
             except ValueError:
                 return
             change = {}
-            if command.get("state") in ("ON", "OFF"):
-                change["enabled"] = command["state"] == "ON"
+            if command.get("state") in ("ON", "OFF"):  # off: the LEDs go dark (Glowback's pause gives them back)
+                change["enabled"], change["dark"] = True, command["state"] == "OFF"
             if isinstance(command.get("brightness"), (int, float)):
                 change["brightness"] = max(1.0, min(100.0, float(command["brightness"])))
             color = command.get("color")
@@ -5853,6 +6054,3022 @@ _sig(user32.IsDialogMessageW, wt.BOOL, HANDLE, ctypes.POINTER(wt.MSG))
 _sig(user32.SetCursor, HANDLE, HANDLE)
 _sig(user32.ScreenToClient, wt.BOOL, HANDLE, ctypes.POINTER(wt.POINT))
 _sig(gdi32.SetBkColor, wt.DWORD, HANDLE, wt.DWORD)
+
+
+# =============================================================================
+# Matter: Glowback as a light in Apple Home, Google Home, Alexa and other Matter apps, from a phone,
+# without Home Assistant. Pure Python: P-256, SPAKE2+ and AES-CCM; PASE and CASE sessions; the Interaction Model;
+# the clusters of an extended color light; DNS-SD. Glowback answers on UDP port 5540 of this PC's network.
+# =============================================================================
+MATTER_VID, MATTER_PID = 0xFFF1, 0x8000  # the test vendor and product IDs of uncertified Matter devices
+MATTER_PATH = os.path.join(LOG_DIR, "matter.json")
+MATTER_VENDORS = {0x1349: "matter_apple_home", 0x1384: "Apple (iOS)", 0x6006: "Google Home", 0x1217: "Amazon Alexa",
+                  0x134B: "Home Assistant"}  # who pairs: Matter vendor IDs (matter_*: a translated name)
+# The Matter SDK's test attestation credentials (github.com/project-chip/connectedhomeip, Apache License 2.0), which
+# uncertified Matter devices use: Apple Home calls Glowback an "uncertified accessory", and Google Home needs a test
+# setup in its developer console (see the README).
+MATTER_DAC = ("MIIB6TCCAY6gAwIBAgIII4pke7xMMN0wCgYIKoZIzj0EAwIwPTElMCMGA1UEAwwcTWF0dGVyIERldiBQQUkgMHhGRkYxIG5vIFBJRDEUMBIGCisG"
+    "AQQBgqJ8AgEMBEZGRjEwIBcNMjIwMjA1MDAwMDAwWhgPOTk5OTEyMzEyMzU5NTlaMFMxJTAjBgNVBAMMHE1hdHRlciBEZXYgREFDIDB4RkZGMS8w"
+    "eDgwMDAxFDASBgorBgEEAYKifAIBDARGRkYxMRQwEgYKKwYBBAGConwCAgwEODAwMDBZMBMGByqGSM49AgEGCCqGSM49AwEHA0IABGLbFrreoyam"
+    "24SBSgY/xsfp4rEBtyFkjrpOWshA9dowHuYYEk60GA4vw6IEelZLqbz6C/cfYM6JMPHn9m7I1yijYDBeMAwGA1UdEwEB/wQCMAAwDgYDVR0PAQH/"
+    "BAQDAgeAMB0GA1UdDgQWBBS897AHSXBjYGomvk4IfFlWh3RaWjAfBgNVHSMEGDAWgBRjVA5H9kscONE4hKRi0WwZXY/7PDAKBggqhkjOPQQDAgNJ"
+    "ADBGAiEAl5cR7J52GM5BgBEywlDbcHZ0YwzVjBLG4jFfCNAe4XgCIQDs/BMGvSoTPRIqJ4YQ6j3KR/BceouAX6ccb/QVOKhkyA==")
+MATTER_DAC_KEY = ("MHcCAQEEIMzPnccFDvXZC+RXB7kOH4ddWb4fqULo7S5CcgP2wu49oAoGCCqGSM49AwEHoUQDQgAEYtsWut6jJqbbhIFKBj/Gx+nisQG3IWSOuk5a"
+    "yED12jAe5hgSTrQYDi/DogR6VkupvPoL9x9gzokw8ef2bsjXKA==")
+MATTER_PAI = ("MIIByzCCAXGgAwIBAgIIVq2CIq2UW2QwCgYIKoZIzj0EAwIwMDEYMBYGA1UEAwwPTWF0dGVyIFRlc3QgUEFBMRQwEgYKKwYBBAGConwCAQwERkZG"
+    "MTAgFw0yMjAyMDUwMDAwMDBaGA85OTk5MTIzMTIzNTk1OVowPTElMCMGA1UEAwwcTWF0dGVyIERldiBQQUkgMHhGRkYxIG5vIFBJRDEUMBIGCisG"
+    "AQQBgqJ8AgEMBEZGRjEwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAARBmpMVwhc+DIyHbQPM/JRIUmR/f+xeUIL0BZko7KiUxZQVEwmsYx5MsDOS"
+    "r2hLC6+35ls7gWLC9Sv5MbjneqqCo2YwZDASBgNVHRMBAf8ECDAGAQH/AgEAMA4GA1UdDwEB/wQEAwIBBjAdBgNVHQ4EFgQUY1QOR/ZLHDjROISk"
+    "YtFsGV2P+zwwHwYDVR0jBBgwFoAUav0idx9RH+y/FkGXZxDc3DGhcX4wCgYIKoZIzj0EAwIDSAAwRQIhALLvJ/Sa6bUPuR7qyUxNC9u415KcbLiP"
+    "rOUpNo0SBUwMAiBlXckrhr2QmIKmxiF3uCXX0F7b58Ivn+pxIg5+pwP4kQ==")
+MATTER_CD = ("MIICFwYJKoZIhvcNAQcCoIICCDCCAgQCAQMxDTALBglghkgBZQMEAgEwggFwBgkqhkiG9w0BBwGgggFhBIIBXRUkAAElAfH/NgIFAIAFAYAFAoAF"
+    "A4AFBIAFBYAFBoAFB4AFCIAFCYAFCoAFC4AFDIAFDYAFDoAFD4AFEIAFEYAFEoAFE4AFFIAFFYAFFoAFF4AFGIAFGYAFGoAFG4AFHIAFHYAFHoAF"
+    "H4AFIIAFIYAFIoAFI4AFJIAFJYAFJoAFJ4AFKIAFKYAFKoAFK4AFLIAFLYAFLoAFL4AFMIAFMYAFMoAFM4AFNIAFNYAFNoAFN4AFOIAFOYAFOoAF"
+    "O4AFPIAFPYAFPoAFP4AFQIAFQYAFQoAFQ4AFRIAFRYAFRoAFR4AFSIAFSYAFSoAFS4AFTIAFTYAFToAFT4AFUIAFUYAFUoAFU4AFVIAFVYAFVoAF"
+    "V4AFWIAFWYAFWoAFW4AFXIAFXYAFXoAFX4AFYIAFYYAFYoAFY4AYJAMWLAQTQ1NBMDAwMDBTV0MwMDAwMC0wMCQFACQGACQHASQIABgxfDB6AgED"
+    "gBT+ND+VmUd2O2HuRTkTEzhJT+Z9jjALBglghkgBZQMEAgEwCgYIKoZIzj0EAwIERjBEAiBKEvjUL5AjXAWncSHL664V1ZAUZVjpybR6Gjj3o2p9"
+    "xQIgIKR0KJfDCu2gpWs24U67yFu9t0ST+ZNYHrBETtbKlAs=")
+
+
+# Matter cryptography, pure Python: P-256 (ECDSA, ECDH), SPAKE2+ (verifier side), AES-128-CCM, HKDF-SHA256.
+# Slow next to C, fast enough for a light: a few handshakes and small messages.
+
+# ---- P-256 (secp256r1)
+P256_P = 0xFFFFFFFF00000001000000000000000000000000FFFFFFFFFFFFFFFFFFFFFFFF
+P256_N = 0xFFFFFFFF00000000FFFFFFFFFFFFFFFFBCE6FAADA7179E84F3B9CAC2FC632551
+P256_B = 0x5AC635D8AA3A93E7B3EBBD55769886BC651D06B0CC53B0F63BCE3C3E27D2604B
+P256_G = (0x6B17D1F2E12C4247F8BCE6E563A440F277037D812DEB33A0F4A13945D898C296,
+          0x4FE342E2FE1A7F9B8EE7EB4A7C0F9E162BCE33576B315ECECBB6406837BF51F5)
+
+
+def _jdouble(pt):
+    x, y, z = pt
+    if not y:
+        return (0, 1, 0)
+    p = P256_P
+    delta, gamma = z * z % p, y * y % p
+    beta, alpha = x * gamma % p, 3 * (x - delta) * (x + delta) % p
+    x3 = (alpha * alpha - 8 * beta) % p
+    z3 = ((y + z) * (y + z) - gamma - delta) % p
+    y3 = (alpha * (4 * beta - x3) - 8 * gamma * gamma) % p
+    return (x3, y3, z3)
+
+
+def _jadd(a, b):
+    if not a[2]:
+        return b
+    if not b[2]:
+        return a
+    p = P256_P
+    x1, y1, z1 = a
+    x2, y2, z2 = b
+    z1z1, z2z2 = z1 * z1 % p, z2 * z2 % p
+    u1, u2 = x1 * z2z2 % p, x2 * z1z1 % p
+    s1, s2 = y1 * z2 * z2z2 % p, y2 * z1 * z1z1 % p
+    h, r = (u2 - u1) % p, (s2 - s1) % p
+    if not h:
+        return _jdouble(a) if not r else (0, 1, 0)
+    hh = h * h % p
+    hhh, v = h * hh % p, u1 * hh % p
+    x3 = (r * r - hhh - 2 * v) % p
+    y3 = (r * (v - x3) - s1 * hhh) % p
+    return (x3, y3, z1 * z2 * h % p)
+
+
+def _affine(pt):
+    if not pt[2]:
+        raise ValueError("point at infinity")
+    zi = pow(pt[2], -1, P256_P)
+    zi2 = zi * zi % P256_P
+    return (pt[0] * zi2 % P256_P, pt[1] * zi2 * zi % P256_P)
+
+
+def ec_mul(k, point=P256_G):
+    """k * point (affine in and out)."""
+    k %= P256_N
+    if not k:
+        raise ValueError("zero scalar")
+    acc, add = (0, 1, 0), (point[0], point[1], 1)
+    while k:
+        if k & 1:
+            acc = _jadd(acc, add)
+        add = _jdouble(add)
+        k >>= 1
+    return _affine(acc)
+
+
+def ec_add(a, b):
+    return _affine(_jadd((a[0], a[1], 1), (b[0], b[1], 1)))
+
+
+def ec_neg(a):
+    return (a[0], (-a[1]) % P256_P)
+
+
+def on_curve(pt):
+    x, y = pt
+    return 0 <= x < P256_P and 0 <= y < P256_P and (y * y - x * x * x + 3 * x - P256_B) % P256_P == 0
+
+
+def ec_encode(pt):
+    return b"\x04" + pt[0].to_bytes(32, "big") + pt[1].to_bytes(32, "big")
+
+
+def ec_decode(data):
+    """Uncompressed (04) or compressed (02/03) P-256 point, checked to be on the curve."""
+    if len(data) == 65 and data[0] == 4:
+        pt = (int.from_bytes(data[1:33], "big"), int.from_bytes(data[33:], "big"))
+    elif len(data) == 33 and data[0] in (2, 3):
+        x = int.from_bytes(data[1:], "big")
+        y = pow((x * x * x - 3 * x + P256_B) % P256_P, (P256_P + 1) // 4, P256_P)
+        if (y & 1) != (data[0] & 1):
+            y = P256_P - y
+        pt = (x, y)
+    else:
+        raise ValueError("bad P-256 point")
+    if not on_curve(pt):
+        raise ValueError("point not on P-256")
+    return pt
+
+
+def ec_keypair():
+    d = int.from_bytes(os.urandom(40), "big") % (P256_N - 1) + 1
+    return d, ec_mul(d)
+
+
+def ecdh(d, peer_pub):
+    """Shared secret: the x coordinate of d * peer (32 bytes)."""
+    return ec_mul(d, ec_decode(peer_pub) if isinstance(peer_pub, (bytes, bytearray)) else peer_pub)[0].to_bytes(32, "big")
+
+
+def ecdsa_sign(d, msg):
+    """ECDSA-SHA256 with the private key d: r || s, 64 bytes."""
+    e = int.from_bytes(hashlib.sha256(msg).digest(), "big")
+    while True:
+        k = int.from_bytes(os.urandom(40), "big") % (P256_N - 1) + 1
+        r = ec_mul(k)[0] % P256_N
+        s = pow(k, -1, P256_N) * (e + r * d) % P256_N
+        if r and s:
+            return r.to_bytes(32, "big") + s.to_bytes(32, "big")
+
+
+def ecdsa_verify(pub, msg, sig):
+    """pub: point or encoded; sig: r || s (64 bytes)."""
+    if len(sig) != 64:
+        return False
+    pt = ec_decode(pub) if isinstance(pub, (bytes, bytearray)) else pub
+    r, s = int.from_bytes(sig[:32], "big"), int.from_bytes(sig[32:], "big")
+    if not (0 < r < P256_N and 0 < s < P256_N):
+        return False
+    e = int.from_bytes(hashlib.sha256(msg).digest(), "big")
+    w = pow(s, -1, P256_N)
+    acc = _jadd(_jmul(e * w % P256_N, P256_G), _jmul(r * w % P256_N, pt))
+    if not acc[2]:
+        return False
+    return _affine(acc)[0] % P256_N == r
+
+
+def _jmul(k, point):
+    acc, add = (0, 1, 0), (point[0], point[1], 1)
+    while k:
+        if k & 1:
+            acc = _jadd(acc, add)
+        add = _jdouble(add)
+        k >>= 1
+    return acc
+
+
+def der_sig(rs):
+    """r || s -> DER ECDSA-Sig-Value."""
+    def integer(v):
+        v = v.lstrip(b"\x00") or b"\x00"
+        if v[0] & 0x80:
+            v = b"\x00" + v
+        return b"\x02" + bytes([len(v)]) + v
+    body = integer(rs[:32]) + integer(rs[32:])
+    return b"\x30" + bytes([len(body)]) + body
+
+
+def raw_sig(der):
+    """DER ECDSA-Sig-Value -> r || s."""
+    if der[0] != 0x30:
+        raise ValueError("bad signature")
+    i, out = 2, b""
+    for _ in range(2):
+        if der[i] != 2:
+            raise ValueError("bad signature")
+        n = der[i + 1]
+        out += int.from_bytes(der[i + 2:i + 2 + n], "big").to_bytes(32, "big")
+        i += 2 + n
+    return out
+
+
+# ---- HKDF-SHA256, HMAC
+def hmac256(key, msg):
+    return hmac.new(key, msg, hashlib.sha256).digest()
+
+
+def hkdf(ikm, salt, info, length):
+    prk = hmac256(salt or b"\x00" * 32, ikm)
+    out, t, i = b"", b"", 1
+    while len(out) < length:
+        t = hmac256(prk, t + info + bytes([i]))
+        out += t
+        i += 1
+    return out[:length]
+
+
+# ---- SPAKE2+ (P-256, SHA-256, HKDF, HMAC), as Matter uses it: the device is the verifier
+SPAKE_M = bytes.fromhex("02886e2f97ace46e55ba9dd7242579f2993b64e16ef3dcab95afd497333d8fa12f")
+SPAKE_N = bytes.fromhex("03d8bbd6c639c62937b04d997f38c3770719c629d7014d49a24b4f98baa1292b49")
+
+
+def pase_verifier(passcode, salt, iterations):
+    """(w0, L) from the setup passcode: what the device keeps instead of the passcode."""
+    ws = hashlib.pbkdf2_hmac("sha256", passcode.to_bytes(4, "little"), salt, iterations, 80)
+    w0, w1 = int.from_bytes(ws[:40], "big") % P256_N, int.from_bytes(ws[40:], "big") % P256_N
+    return w0, ec_encode(ec_mul(w1))
+
+
+class Spake2pVerifier:
+    """One SPAKE2+ exchange: X (from the commissioner) -> Y and cB; then cA is checked; Ke is the shared key."""
+
+    def __init__(self, context, w0, L, prover_id=b"", verifier_id=b"", y=None):
+        self.context, self.w0, self.L = context, w0, ec_decode(L)
+        self.ids = prover_id, verifier_id
+        self.y = y or int.from_bytes(os.urandom(40), "big") % (P256_N - 1) + 1
+
+    def respond(self, X):
+        Xp = ec_decode(X)
+        M, N = ec_decode(SPAKE_M), ec_decode(SPAKE_N)
+        Y = ec_encode(ec_add(ec_mul(self.y), ec_mul(self.w0, N)))
+        Z = ec_encode(ec_mul(self.y, ec_add(Xp, ec_neg(ec_mul(self.w0, M)))))
+        V = ec_encode(ec_mul(self.y, self.L))
+        tt = b""
+        for part in (self.context, self.ids[0], self.ids[1], ec_encode(M), ec_encode(N), X, Y, Z, V,
+                     self.w0.to_bytes(32, "big")):
+            tt += len(part).to_bytes(8, "little") + part
+        k = hashlib.sha256(tt).digest()
+        self.Ka, self.Ke = k[:16], k[16:]
+        kc = hkdf(self.Ka, b"", b"ConfirmationKeys", 32)
+        self.KcA, self.KcB = kc[:16], kc[16:]
+        self.Y, self.Z, self.V = Y, Z, V
+        self.expected_cA = hmac256(self.KcA, Y)
+        return Y, hmac256(self.KcB, X)
+
+    def check(self, cA):
+        return hmac.compare_digest(cA, self.expected_cA)
+
+
+# ---- AES-128 (encryption only: CTR and CBC-MAC need nothing else) and AES-CCM
+_AES_SBOX = bytearray(256)
+_aes_p = _aes_q = 1
+while True:  # the S-box from GF(2^8) inverses and the affine map
+    _aes_p = _aes_p ^ ((_aes_p << 1) & 0xFF) ^ (0x1B if _aes_p & 0x80 else 0)
+    _aes_q ^= _aes_q << 1
+    _aes_q ^= _aes_q << 2
+    _aes_q ^= _aes_q << 4
+    _aes_q &= 0xFF
+    if _aes_q & 0x80:
+        _aes_q ^= 0x09
+    _aes_x = _aes_q ^ ((_aes_q << 1) | (_aes_q >> 7)) & 0xFF ^ ((_aes_q << 2) | (_aes_q >> 6)) & 0xFF ^ ((_aes_q << 3) | (_aes_q >> 5)) & 0xFF \
+        ^ ((_aes_q << 4) | (_aes_q >> 4)) & 0xFF
+    _AES_SBOX[_aes_p] = (_aes_x ^ 0x63) & 0xFF
+    if _aes_p == 1:
+        break
+_AES_SBOX[0] = 0x63
+
+
+def _aes_xt(b):
+    return ((b << 1) ^ 0x1B) & 0xFF if b & 0x80 else b << 1
+
+
+_AES_T0 = [0] * 256  # round tables: SubBytes + ShiftRows + MixColumns as lookups
+for _aes_i in range(256):
+    _aes_s = _AES_SBOX[_aes_i]
+    _aes_s2 = _aes_xt(_aes_s)
+    _AES_T0[_aes_i] = (_aes_s2 << 24) | (_aes_s << 16) | (_aes_s << 8) | (_aes_s2 ^ _aes_s)
+_AES_T1 = [((t >> 8) | (t << 24)) & 0xFFFFFFFF for t in _AES_T0]
+_AES_T2 = [((t >> 16) | (t << 16)) & 0xFFFFFFFF for t in _AES_T0]
+_AES_T3 = [((t >> 24) | (t << 8)) & 0xFFFFFFFF for t in _AES_T0]
+
+
+class AES128:
+    def __init__(self, key):
+        w = [int.from_bytes(key[i:i + 4], "big") for i in range(0, 16, 4)]
+        rcon = 1
+        for i in range(4, 44):
+            t = w[i - 1]
+            if i % 4 == 0:
+                t = ((_AES_SBOX[(t >> 16) & 0xFF] << 24) | (_AES_SBOX[(t >> 8) & 0xFF] << 16) | (_AES_SBOX[t & 0xFF] << 8)
+                     | _AES_SBOX[t >> 24]) ^ (rcon << 24)
+                rcon = _aes_xt(rcon)
+            w.append(w[i - 4] ^ t)
+        self.rk = w
+
+    def encrypt_block(self, block):
+        rk = self.rk
+        s0, s1, s2, s3 = (int.from_bytes(block[i:i + 4], "big") ^ rk[i // 4] for i in range(0, 16, 4))
+        T0, T1, T2, T3 = _AES_T0, _AES_T1, _AES_T2, _AES_T3
+        for r in range(1, 10):
+            k = 4 * r
+            s0, s1, s2, s3 = (
+                T0[s0 >> 24] ^ T1[(s1 >> 16) & 0xFF] ^ T2[(s2 >> 8) & 0xFF] ^ T3[s3 & 0xFF] ^ rk[k],
+                T0[s1 >> 24] ^ T1[(s2 >> 16) & 0xFF] ^ T2[(s3 >> 8) & 0xFF] ^ T3[s0 & 0xFF] ^ rk[k + 1],
+                T0[s2 >> 24] ^ T1[(s3 >> 16) & 0xFF] ^ T2[(s0 >> 8) & 0xFF] ^ T3[s1 & 0xFF] ^ rk[k + 2],
+                T0[s3 >> 24] ^ T1[(s0 >> 16) & 0xFF] ^ T2[(s1 >> 8) & 0xFF] ^ T3[s2 & 0xFF] ^ rk[k + 3])
+        S = _AES_SBOX
+        out = b""
+        for i, (a, b, c, d) in enumerate(((s0, s1, s2, s3), (s1, s2, s3, s0), (s2, s3, s0, s1), (s3, s0, s1, s2))):
+            v = (S[a >> 24] << 24) | (S[(b >> 16) & 0xFF] << 16) | (S[(c >> 8) & 0xFF] << 8) | S[d & 0xFF]
+            out += (v ^ rk[40 + i]).to_bytes(4, "big")
+        return out
+
+
+def _xor_bytes(a, b):
+    return (int.from_bytes(a, "big") ^ int.from_bytes(b, "big")).to_bytes(len(a), "big")
+
+
+def _ccm_mac(aes, nonce, data, aad, mic_len):
+    """(tag before encryption, keystream for data) for AES-CCM with a 13-byte nonce (L = 2)."""
+    q = 15 - len(nonce)
+    b0 = bytes([(0x40 if aad else 0) | ((mic_len - 2) // 2) << 3 | (q - 1)]) + nonce + len(data).to_bytes(q, "big")
+    mac = aes.encrypt_block(b0)
+    if aad:
+        a = len(aad).to_bytes(2, "big") + aad
+        a += b"\x00" * (-len(a) % 16)
+        for i in range(0, len(a), 16):
+            mac = aes.encrypt_block(_xor_bytes(mac, a[i:i + 16]))
+    return mac, q
+
+
+def ccm_encrypt(key, nonce, plaintext, aad=b"", mic_len=16):
+    aes = AES128(key)
+    mac, q = _ccm_mac(aes, nonce, plaintext, aad, mic_len)
+    padded = plaintext + b"\x00" * (-len(plaintext) % 16)
+    for i in range(0, len(padded), 16):
+        mac = aes.encrypt_block(_xor_bytes(mac, padded[i:i + 16]))
+    out = bytearray()
+    for i in range(0, len(plaintext), 16):
+        ks = aes.encrypt_block(bytes([q - 1]) + nonce + (i // 16 + 1).to_bytes(q, "big"))
+        chunk = plaintext[i:i + 16]
+        out += _xor_bytes(chunk, ks[:len(chunk)])
+    s0 = aes.encrypt_block(bytes([q - 1]) + nonce + b"\x00" * q)
+    return bytes(out) + _xor_bytes(mac[:mic_len], s0[:mic_len])
+
+
+def ccm_decrypt(key, nonce, data, aad=b"", mic_len=16):
+    """The plaintext, or None if the message was altered."""
+    if len(data) < mic_len:
+        return None
+    aes = AES128(key)
+    q = 15 - len(nonce)
+    ct, tag = data[:-mic_len], data[-mic_len:]
+    out = bytearray()
+    for i in range(0, len(ct), 16):
+        ks = aes.encrypt_block(bytes([q - 1]) + nonce + (i // 16 + 1).to_bytes(q, "big"))
+        chunk = ct[i:i + 16]
+        out += _xor_bytes(chunk, ks[:len(chunk)])
+    pt = bytes(out)
+    mac, _ = _ccm_mac(aes, nonce, pt, aad, mic_len)
+    padded = pt + b"\x00" * (-len(pt) % 16)
+    for i in range(0, len(padded), 16):
+        mac = aes.encrypt_block(_xor_bytes(mac, padded[i:i + 16]))
+    s0 = aes.encrypt_block(bytes([q - 1]) + nonce + b"\x00" * q)
+    return pt if hmac.compare_digest(_xor_bytes(mac[:mic_len], s0[:mic_len]), tag) else None
+
+
+# Matter TLV (Core spec, appendix A) and Matter operational certificates (chapter 6.5): TLV <-> X.509 for checking
+# signatures, the CSR a device sends, the DAC key.
+
+
+
+class TlvSigned(int):
+    """A signed TLV integer (plain non-negative ints are encoded unsigned)."""
+
+
+class TlvFloat32(float):
+    """A 4-byte TLV float (plain floats are 8 bytes)."""
+
+
+class TList(list):
+    """A TLV list: ordered (tag, value) pairs, tags may repeat (paths, certificate names)."""
+
+    def get(self, tag, default=None):
+        for t, v in self:
+            if t == tag:
+                return v
+        return default
+
+
+class TlvArray(list):
+    """A TLV array: anonymous elements (a plain Python list is also encoded as an array)."""
+
+
+def _tlv_int(v, signed):
+    for n, code in ((1, 0), (2, 1), (4, 2), (8, 3)):
+        lo, hi = (-(1 << (8 * n - 1)), (1 << (8 * n - 1)) - 1) if signed else (0, (1 << (8 * n)) - 1)
+        if lo <= v <= hi:
+            return code, v.to_bytes(n, "little", signed=signed)
+    raise ValueError(f"integer too large for TLV: {v}")
+
+
+def _tlv_tag(tag):
+    if tag is None:
+        return 0x00, b""
+    if isinstance(tag, int) and 0 <= tag <= 255:
+        return 0x20, bytes([tag])
+    if isinstance(tag, tuple):  # (vendor, profile, number): fully qualified
+        vendor, profile, number = tag
+        if number <= 0xFFFF:
+            return 0xC0, struct.pack("<HHH", vendor, profile, number)
+        return 0xE0, struct.pack("<HHI", vendor, profile, number)
+    raise ValueError(f"unsupported TLV tag {tag!r}")
+
+
+def tlv_encode(value, tag=None):
+    tc, tb = _tlv_tag(tag)
+    if value is None:
+        return bytes([tc | 0x14]) + tb
+    if value is True or value is False:
+        return bytes([tc | (0x09 if value else 0x08)]) + tb
+    if isinstance(value, int):
+        signed = isinstance(value, TlvSigned) or value < 0
+        code, b = _tlv_int(int(value), signed)
+        return bytes([tc | (code if signed else 4 + code)]) + tb + b
+    if isinstance(value, TlvFloat32):
+        return bytes([tc | 0x0A]) + tb + struct.pack("<f", value)
+    if isinstance(value, float):
+        return bytes([tc | 0x0B]) + tb + struct.pack("<d", value)
+    if isinstance(value, (bytes, bytearray, str)):
+        data = value.encode() if isinstance(value, str) else bytes(value)
+        base = 0x0C if isinstance(value, str) else 0x10
+        code, ln = _tlv_int(len(data), False)
+        return bytes([tc | (base + code)]) + tb + ln + data
+    if isinstance(value, dict):
+        return bytes([tc | 0x15]) + tb + b"".join(tlv_encode(v, k) for k, v in value.items()) + b"\x18"
+    if isinstance(value, TList):
+        return bytes([tc | 0x17]) + tb + b"".join(tlv_encode(v, k) for k, v in value) + b"\x18"
+    if isinstance(value, (list, tuple)):
+        return bytes([tc | 0x16]) + tb + b"".join(tlv_encode(v) for v in value) + b"\x18"
+    if isinstance(value, TlvRaw):
+        return value.with_tag(tc, tb)
+    raise TypeError(f"cannot encode {type(value).__name__} as TLV")
+
+
+class TlvRaw:
+    """Already-encoded TLV (anonymous): inserted as is, under the tag it is given."""
+
+    def __init__(self, data):
+        self.data = data
+
+    def with_tag(self, tc, tb):
+        return bytes([self.data[0] | tc]) + tb + self.data[1:]
+
+
+class _TlvReader:
+    def __init__(self, data, pos=0):
+        self.d, self.i = data, pos
+
+    def take(self, n):
+        if self.i + n > len(self.d):
+            raise ValueError("truncated TLV")
+        b = self.d[self.i:self.i + n]
+        self.i += n
+        return b
+
+    def element(self):
+        """(tag, value), or (END, None) at the end of a container."""
+        ctrl = self.take(1)[0]
+        typ, tcode = ctrl & 0x1F, ctrl >> 5
+        if typ == 0x18:
+            return _TLV_END, None
+        if tcode == 0:
+            tag = None
+        elif tcode == 1:
+            tag = self.take(1)[0]
+        elif tcode in (2, 4):
+            tag = ("common" if tcode == 2 else "implicit", struct.unpack("<H", self.take(2))[0])
+        elif tcode in (3, 5):
+            tag = ("common" if tcode == 3 else "implicit", struct.unpack("<I", self.take(4))[0])
+        elif tcode == 6:
+            tag = struct.unpack("<HHH", self.take(6))
+        else:
+            tag = struct.unpack("<HHI", self.take(8))
+        if typ <= 0x07:
+            n = 1 << (typ & 3)
+            return tag, int.from_bytes(self.take(n), "little", signed=typ < 4)
+        if typ in (0x08, 0x09):
+            return tag, typ == 0x09
+        if typ == 0x0A:
+            return tag, struct.unpack("<f", self.take(4))[0]
+        if typ == 0x0B:
+            return tag, struct.unpack("<d", self.take(8))[0]
+        if 0x0C <= typ <= 0x13:
+            n = int.from_bytes(self.take(1 << (typ & 3)), "little")
+            raw = self.take(n)
+            return tag, (raw.decode("utf-8", "replace") if typ < 0x10 else bytes(raw))
+        if typ == 0x14:
+            return tag, None
+        if typ == 0x15:
+            out = {}
+            while True:
+                t, v = self.element()
+                if t is _TLV_END:
+                    return tag, out
+                out[t] = v
+        if typ == 0x16:
+            out = TlvArray()
+            while True:
+                t, v = self.element()
+                if t is _TLV_END:
+                    return tag, out
+                out.append(v)
+        if typ == 0x17:
+            out = TList()
+            while True:
+                t, v = self.element()
+                if t is _TLV_END:
+                    return tag, out
+                out.append((t, v))
+        raise ValueError(f"bad TLV element type {typ:#x}")
+
+
+_TLV_END = object()
+
+
+def tlv_decode(data):
+    """The first (anonymous) element of data."""
+    return _TlvReader(data).element()[1]
+
+
+def tlv_decode_all(data):
+    r, out = _TlvReader(data), []
+    while r.i < len(data):
+        out.append(r.element())
+    return out
+
+
+# ---- DER (just what certificates and CSRs need)
+def _der_len(n):
+    if n < 0x80:
+        return bytes([n])
+    b = n.to_bytes((n.bit_length() + 7) // 8, "big")
+    return bytes([0x80 | len(b)]) + b
+
+
+def der(tag, *parts):
+    body = b"".join(parts)
+    return bytes([tag]) + _der_len(len(body)) + body
+
+
+def der_oid(dotted):
+    nums = [int(x) for x in dotted.split(".")]
+    out = bytes([40 * nums[0] + nums[1]])
+    for n in nums[2:]:
+        chunk = [n & 0x7F]
+        n >>= 7
+        while n:
+            chunk.append(0x80 | (n & 0x7F))
+            n >>= 7
+        out += bytes(reversed(chunk))
+    return der(0x06, out)
+
+
+def der_int(value_bytes):
+    """INTEGER from big-endian content bytes, normalized."""
+    v = value_bytes.lstrip(b"\x00") or b"\x00"
+    if v[0] & 0x80:
+        v = b"\x00" + v
+    return der(0x02, v)
+
+
+def der_parse(data, pos=0):
+    """(tag, content, next position)."""
+    tag, n = data[pos], data[pos + 1]
+    pos += 2
+    if n & 0x80:
+        k = n & 0x7F
+        n = int.from_bytes(data[pos:pos + k], "big")
+        pos += k
+    return tag, data[pos:pos + n], pos + n
+
+
+def der_items(content):
+    out, pos = [], 0
+    while pos < len(content):
+        tag, body, nxt = der_parse(content, pos)
+        out.append((tag, body, content[pos:nxt]))
+        pos = nxt
+    return out
+
+
+OID_ECDSA_SHA256 = "1.2.840.10045.4.3.2"
+OID_EC_PUBKEY = "1.2.840.10045.2.1"
+OID_P256 = "1.2.840.10045.3.1.7"
+_DN_OIDS = {1: "2.5.4.3", 2: "2.5.4.4", 3: "2.5.4.5", 4: "2.5.4.6", 5: "2.5.4.7", 6: "2.5.4.8", 7: "2.5.4.10",
+            8: "2.5.4.11", 9: "2.5.4.12", 10: "2.5.4.41", 11: "2.5.4.42", 12: "2.5.4.43", 13: "2.5.4.44",
+            14: "2.5.4.46", 15: "2.5.4.65", 16: "0.9.2342.19200300.100.1.25", 17: "1.3.6.1.4.1.37244.1.1",
+            18: "1.3.6.1.4.1.37244.1.2", 19: "1.3.6.1.4.1.37244.1.3", 20: "1.3.6.1.4.1.37244.1.4",
+            21: "1.3.6.1.4.1.37244.1.5", 22: "1.3.6.1.4.1.37244.1.6"}
+_EKU_OIDS = {1: "1.3.6.1.5.5.7.3.1", 2: "1.3.6.1.5.5.7.3.2", 3: "1.3.6.1.5.5.7.3.3", 4: "1.3.6.1.5.5.7.3.4",
+             5: "1.3.6.1.5.5.7.3.8", 6: "1.3.6.1.5.5.7.3.9"}
+MATTER_EPOCH = 946684800  # 2000-01-01T00:00:00Z
+
+
+def _cert_dn(name):
+    rdns = b""
+    for tag, value in name:
+        base = tag & 0x7F
+        oid = _DN_OIDS.get(base)
+        if oid is None:
+            raise ValueError(f"unknown DN attribute {tag}")
+        if 17 <= base <= 22:  # Matter identifiers: upper-case hex in a UTF8String
+            text = f"{value:08X}" if base == 22 else f"{value:016X}"
+            val = der(0x0C, text.encode())
+        elif base == 16:
+            val = der(0x16, value.encode())  # IA5String
+        else:
+            val = der(0x13 if tag & 0x80 else 0x0C, value.encode())  # PrintableString / UTF8String
+        rdns += der(0x31, der(0x30, der_oid(oid), val))
+    return der(0x30, rdns)
+
+
+def _cert_time(t):
+    if t == 0:
+        return der(0x18, b"99991231235959Z")
+    tm = time.gmtime(MATTER_EPOCH + t)
+    if 1950 <= tm.tm_year < 2050:
+        return der(0x17, time.strftime("%y%m%d%H%M%SZ", tm).encode())
+    return der(0x18, time.strftime("%Y%m%d%H%M%SZ", tm).encode())
+
+
+def _der_bits(flags, count):
+    bits = [(flags >> i) & 1 for i in range(count)]
+    while bits and not bits[-1]:
+        bits.pop()
+    nbytes = (len(bits) + 7) // 8
+    out = bytearray(nbytes)
+    for i, b in enumerate(bits):
+        if b:
+            out[i // 8] |= 0x80 >> (i % 8)
+    return der(0x03, bytes([nbytes * 8 - len(bits)]) + bytes(out))
+
+
+def _cert_extension(oid, critical, value):
+    return der(0x30, der_oid(oid), der(0x01, b"\xff") if critical else b"", der(0x04, value))
+
+
+def cert_tbs(cert):
+    """The X.509 TBSCertificate (DER) a Matter TLV certificate was signed as."""
+    exts = b""
+    for tag, v in cert.get(10, TList()):
+        if tag == 1:
+            body = (der(0x01, b"\xff") if v.get(1) else b"") + (der_int(v[2].to_bytes(8, "big")) if 2 in v else b"")
+            exts += _cert_extension("2.5.29.19", True, der(0x30, body))
+        elif tag == 2:
+            exts += _cert_extension("2.5.29.15", True, _der_bits(v, 9))
+        elif tag == 3:
+            exts += _cert_extension("2.5.29.37", True, der(0x30, *(der_oid(_EKU_OIDS[k]) for k in v)))
+        elif tag == 4:
+            exts += _cert_extension("2.5.29.14", False, der(0x04, v))
+        elif tag == 5:
+            exts += _cert_extension("2.5.29.35", False, der(0x30, der(0x80, v)))
+        elif tag == 6:
+            exts += v  # already a DER Extension
+    spki = der(0x30, der(0x30, der_oid(OID_EC_PUBKEY), der_oid(OID_P256)), der(0x03, b"\x00" + cert[9]))
+    return der(0x30,
+               der(0xA0, der(0x02, b"\x02")),
+               der(0x02, cert[1]),  # the serial number's bytes are the INTEGER's content, as is
+               der(0x30, der_oid(OID_ECDSA_SHA256)),
+               _cert_dn(cert[3]),
+               der(0x30, _cert_time(cert[4]), _cert_time(cert[5])),
+               _cert_dn(cert[6]),
+               spki,
+               der(0xA3, der(0x30, exts)))
+
+
+def cert_parse(data):
+    cert = tlv_decode(data)
+    if not isinstance(cert, dict) or 9 not in cert or 11 not in cert:
+        raise ValueError("not a Matter certificate")
+    return cert
+
+
+def cert_signed_by(cert, issuer_pub):
+    return ecdsa_verify(issuer_pub, cert_tbs(cert), cert[11])
+
+
+def cert_dn_value(name, tag):
+    for t, v in name:
+        if t == tag:
+            return v
+    return None
+
+
+def cert_verify_chain(noc, icac, rcac):
+    """Checks a node's operational certificate chain; returns (fabric_id, node_id, cats) of the NOC."""
+    root = cert_parse(rcac)
+    if not cert_signed_by(root, root[9]):
+        raise ValueError("root certificate signature")
+    issuer = root
+    if icac:
+        ica = cert_parse(icac)
+        if not cert_signed_by(ica, root[9]):
+            raise ValueError("ICAC signature")
+        issuer = ica
+    node = cert_parse(noc)
+    if not cert_signed_by(node, issuer[9]):
+        raise ValueError("NOC signature")
+    fabric_id, node_id = cert_dn_value(node[6], 21), cert_dn_value(node[6], 17)
+    if node_id is None or fabric_id is None:
+        raise ValueError("NOC without node or fabric ID")
+    for c in (root, issuer):
+        f = cert_dn_value(c[6], 21)
+        if f is not None and f != fabric_id:
+            raise ValueError("fabric ID mismatch")
+    cats = [v for t, v in node[6] if t == 22]
+    return fabric_id, node_id, cats
+
+
+# ---- device side: CSR and keys
+def matter_csr(d, pub):
+    """PKCS#10 certificate request for the operational key (subject O=CSR, as the Matter SDK does)."""
+    spki = der(0x30, der(0x30, der_oid(OID_EC_PUBKEY), der_oid(OID_P256)), der(0x03, b"\x00" + ec_encode(pub)))
+    subject = der(0x30, der(0x31, der(0x30, der_oid("2.5.4.10"), der(0x0C, b"CSR"))))
+    info = der(0x30, der(0x02, b"\x00"), subject, spki, der(0xA0))
+    sig = der_sig(ecdsa_sign(d, info))
+    return der(0x30, info, der(0x30, der_oid(OID_ECDSA_SHA256)), der(0x03, b"\x00" + sig))
+
+
+def ec_private_key(der_key):
+    """The private scalar of a SEC1 ECPrivateKey (DER)."""
+    _, body, _ = der_parse(der_key)
+    for tag, content, _ in der_items(body):
+        if tag == 0x04 and len(content) == 32:
+            return int.from_bytes(content, "big")
+    raise ValueError("no private key")
+
+
+def compressed_fabric_id(root_pub, fabric_id):
+    """Key: the root public key without its 04 prefix; salt: the fabric ID (Matter Core 4.3.2.2)."""
+    return hkdf(root_pub[1:], fabric_id.to_bytes(8, "big"), b"CompressedFabric", 8)
+
+
+def operational_ipk(epoch_key, cfid):
+    return hkdf(epoch_key, cfid, b"GroupKey v1.0", 16)
+
+
+def sha256(data):
+    return hashlib.sha256(data).digest()
+
+
+# Matter onboarding payload: the QR code text (MT:...), the 11-digit manual pairing code, and a QR code matrix.
+
+_QR_B38 = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ-."
+MATTER_INVALID_PASSCODES = {0, 11111111, 22222222, 33333333, 44444444, 55555555, 66666666, 77777777, 88888888,
+                     99999999, 12345678, 87654321}
+
+
+def matter_qr_payload(vid, pid, discriminator, passcode, flow=0, discovery=0x04):
+    """'MT:' + base-38 of the 88-bit payload (discovery 0x04: already on the IP network)."""
+    bits = 0
+    pos = 0
+    for value, width in ((0, 3), (vid, 16), (pid, 16), (flow, 2), (discovery, 8), (discriminator, 12),
+                         (passcode, 27), (0, 4)):
+        bits |= (value & ((1 << width) - 1)) << pos
+        pos += width
+    data = bits.to_bytes(11, "little")
+    out = ""
+    for i in range(0, len(data), 3):
+        chunk = data[i:i + 3]
+        v = int.from_bytes(chunk, "little")
+        for _ in range({1: 2, 2: 4, 3: 5}[len(chunk)]):
+            out += _QR_B38[v % 38]
+            v //= 38
+    return "MT:" + out
+
+
+_VERHOEFF_D = [[0, 1, 2, 3, 4, 5, 6, 7, 8, 9], [1, 2, 3, 4, 0, 6, 7, 8, 9, 5], [2, 3, 4, 0, 1, 7, 8, 9, 5, 6],
+      [3, 4, 0, 1, 2, 8, 9, 5, 6, 7], [4, 0, 1, 2, 3, 9, 5, 6, 7, 8], [5, 9, 8, 7, 6, 0, 4, 3, 2, 1],
+      [6, 5, 9, 8, 7, 1, 0, 4, 3, 2], [7, 6, 5, 9, 8, 2, 1, 0, 4, 3], [8, 7, 6, 5, 9, 3, 2, 1, 0, 4],
+      [9, 8, 7, 6, 5, 4, 3, 2, 1, 0]]
+_VERHOEFF_P = [[0, 1, 2, 3, 4, 5, 6, 7, 8, 9], [1, 5, 7, 6, 2, 8, 3, 0, 9, 4], [5, 8, 0, 3, 7, 9, 6, 1, 4, 2],
+      [8, 9, 1, 6, 0, 4, 3, 5, 2, 7], [9, 4, 5, 3, 1, 2, 6, 8, 7, 0], [4, 2, 8, 6, 5, 7, 3, 9, 0, 1],
+      [2, 7, 9, 3, 8, 0, 6, 4, 1, 5], [7, 0, 4, 6, 9, 1, 3, 2, 5, 8]]
+_VERHOEFF_INV = [0, 4, 3, 2, 1, 5, 6, 7, 8, 9]
+
+
+def _verhoeff(digits):
+    c = 0
+    for i, d in enumerate(reversed(digits)):
+        c = _VERHOEFF_D[c][_VERHOEFF_P[(i + 1) % 8][int(d)]]
+    return str(_VERHOEFF_INV[c])
+
+
+def matter_manual_code(discriminator, passcode):
+    """The 11-digit code people can type in Apple Home / Google Home ("XXXX-XXX-XXXX")."""
+    short = discriminator >> 8  # the 4 upper bits
+    chunk1 = short >> 2
+    chunk2 = ((short & 0x3) << 14) | (passcode & 0x3FFF)
+    chunk3 = passcode >> 14
+    digits = f"{chunk1}{chunk2:05d}{chunk3:04d}"
+    return digits + _verhoeff(digits)
+
+
+# ---- QR code (alphanumeric mode, error correction M, versions 1-5)
+_QR_ALNUM = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ $%*+-./:"
+_QR_BLOCKS = {1: (16, 10, 1), 2: (28, 16, 1), 3: (44, 26, 1), 4: (32, 18, 2), 5: (43, 24, 2)}  # data/block, ec/block
+_QR_ALIGN = {2: 18, 3: 22, 4: 26, 5: 30}
+_QR_EXP = [0] * 512
+_QR_LOG = [0] * 256
+_qr_x = 1
+for _qr_i in range(255):
+    _QR_EXP[_qr_i] = _qr_x
+    _QR_LOG[_qr_x] = _qr_i
+    _qr_x <<= 1
+    if _qr_x & 0x100:
+        _qr_x ^= 0x11D
+for _qr_i in range(255, 512):
+    _QR_EXP[_qr_i] = _QR_EXP[_qr_i - 255]
+
+
+def _qr_rs(data, n):
+    gen = [1]
+    for i in range(n):
+        nxt = [0] * (len(gen) + 1)
+        for j, g in enumerate(gen):
+            nxt[j] ^= g
+            nxt[j + 1] ^= _QR_EXP[_QR_LOG[g] + i] if g else 0
+        gen = nxt
+    rem = list(data) + [0] * n
+    for i in range(len(data)):
+        c = rem[i]
+        if c:
+            for j in range(1, len(gen)):
+                if gen[j]:
+                    rem[i + j] ^= _QR_EXP[_QR_LOG[gen[j]] + _QR_LOG[c]]
+    return rem[len(data):]
+
+
+def qr_matrix(text):
+    """Rows of booleans (True = dark), quiet zone not included."""
+    text = text.upper()
+    for version in range(1, 6):
+        per, ec, blocks = _QR_BLOCKS[version]
+        cap = per * blocks
+        bits = 4 + (9 if version < 10 else 11) + 11 * (len(text) // 2) + 6 * (len(text) % 2)
+        if bits <= cap * 8:
+            break
+    else:
+        raise ValueError("text too long for this QR encoder")
+    buf = [(0b0010, 4), (len(text), 9)]
+    for i in range(0, len(text) - 1, 2):
+        buf.append((_QR_ALNUM.index(text[i]) * 45 + _QR_ALNUM.index(text[i + 1]), 11))
+    if len(text) % 2:
+        buf.append((_QR_ALNUM.index(text[-1]), 6))
+    s = "".join(format(v, f"0{w}b") for v, w in buf)
+    s += "0" * min(4, cap * 8 - len(s))
+    s += "0" * (-len(s) % 8)
+    data = [int(s[i:i + 8], 2) for i in range(0, len(s), 8)]
+    pad = (0xEC, 0x11)
+    while len(data) < cap:
+        data.append(pad[(len(data) - len(s) // 8) % 2])
+    groups = [data[i * per:(i + 1) * per] for i in range(blocks)]
+    ecs = [_qr_rs(g, ec) for g in groups]
+    final = [g[i] for i in range(per) for g in groups] + [e[i] for i in range(ec) for e in ecs]
+    size = 17 + 4 * version
+    m = [[None] * size for _ in range(size)]
+
+    def finder(r, c):
+        for dr in range(-1, 8):
+            for dc in range(-1, 8):
+                rr, cc = r + dr, c + dc
+                if 0 <= rr < size and 0 <= cc < size:
+                    m[rr][cc] = (0 <= dr <= 6 and dc in (0, 6)) or (0 <= dc <= 6 and dr in (0, 6)) or \
+                                (2 <= dr <= 4 and 2 <= dc <= 4)
+    finder(0, 0)
+    finder(0, size - 7)
+    finder(size - 7, 0)
+    for i in range(8, size - 8):
+        m[6][i] = m[i][6] = i % 2 == 0
+    if version in _QR_ALIGN:
+        a = _QR_ALIGN[version]
+        for dr in range(-2, 3):
+            for dc in range(-2, 3):
+                m[a + dr][a + dc] = max(abs(dr), abs(dc)) != 1
+    m[size - 8][8] = True  # dark module
+    reserved = [[v is not None for v in row] for row in m]
+    for i in range(9):  # format areas
+        for r, c in ((8, i), (i, 8)):
+            reserved[r][c] = True
+    for i in range(8):
+        reserved[8][size - 1 - i] = reserved[size - 1 - i][8] = True
+    bits_out = "".join(format(b, "08b") for b in final)
+    idx, up = 0, True
+    col = size - 1
+    while col > 0:
+        if col == 6:
+            col -= 1
+        for k in range(size):
+            row = size - 1 - k if up else k
+            for c in (col, col - 1):
+                if not reserved[row][c]:
+                    m[row][c] = idx < len(bits_out) and bits_out[idx] == "1"
+                    idx += 1
+        up = not up
+        col -= 2
+    masks = [lambda r, c: (r + c) % 2 == 0, lambda r, c: r % 2 == 0, lambda r, c: c % 3 == 0,
+             lambda r, c: (r + c) % 3 == 0, lambda r, c: (r // 2 + c // 3) % 2 == 0,
+             lambda r, c: (r * c) % 2 + (r * c) % 3 == 0, lambda r, c: ((r * c) % 2 + (r * c) % 3) % 2 == 0,
+             lambda r, c: ((r + c) % 2 + (r * c) % 3) % 2 == 0]
+    best = None
+    for mi, mask in enumerate(masks):
+        g = [[(not m[r][c]) if (not reserved[r][c] and mask(r, c)) else bool(m[r][c]) for c in range(size)]
+             for r in range(size)]
+        fmt = (0b00 << 3) | mi  # level M = 00
+        rem = fmt << 10
+        for i in range(14, 9, -1):
+            if rem & (1 << i):
+                rem ^= 0x537 << (i - 10)
+        fbits = ((fmt << 10) | rem) ^ 0x5412
+        bit = lambda i: bool((fbits >> i) & 1)  # noqa: E731
+        for i in range(6):  # first copy, around the top-left finder
+            g[i][8] = bit(i)
+        g[7][8], g[8][8], g[8][7] = bit(6), bit(7), bit(8)
+        for i in range(9, 15):
+            g[8][14 - i] = bit(i)
+        for i in range(8):  # second copy, split between the other two finders
+            g[8][size - 1 - i] = bit(i)
+        for i in range(8, 15):
+            g[size - 15 + i][8] = bit(i)
+        g[size - 8][8] = True
+        score = _qr_penalty(g)
+        if best is None or score < best[0]:
+            best = (score, g)
+    return best[1]
+
+
+def _qr_penalty(g):
+    n, score = len(g), 0
+    for lines in (g, list(zip(*g))):
+        for line in lines:
+            run, prev = 0, None
+            for v in line:
+                if v == prev:
+                    run += 1
+                else:
+                    if run >= 5:
+                        score += run - 2
+                    run, prev = 1, v
+            if run >= 5:
+                score += run - 2
+    for r in range(n - 1):
+        for c in range(n - 1):
+            if g[r][c] == g[r][c + 1] == g[r + 1][c] == g[r + 1][c + 1]:
+                score += 3
+    dark = sum(map(sum, g))
+    score += abs(dark * 20 - n * n * 10) // (n * n) * 10
+    return score
+
+
+# A Matter "Extended Color Light" over IP (Ethernet / Wi-Fi), pure Python: MRP transport, PASE and CASE sessions,
+# the Interaction Model (read, subscribe, write, invoke, timed), the clusters a light and its commissioning need,
+# access control, fail-safe, multi-admin commissioning windows and a small DNS-SD (mDNS) responder.
+
+
+MATTER_PORT = 5540
+DEVICE_TYPE_LIGHT, DEVICE_TYPE_ROOT = 0x010D, 0x0016  # Extended Color Light, Root Node
+MATTER_SPEC_VERSION, MATTER_DM_REVISION, IM_REVISION = 0x01030000, 17, 11
+MATTER_MAX_FABRICS = 5
+PRIV_VIEW, PRIV_OPERATE, PRIV_MANAGE, PRIV_ADMIN = 1, 3, 4, 5
+PASE_AUTH, CASE_AUTH, GROUP_AUTH = 1, 2, 3
+
+ST_OK, ST_FAILURE, ST_INVALID_SUBSCRIPTION, ST_UNSUPPORTED_ACCESS, ST_UNSUPPORTED_ENDPOINT = 0x00, 0x01, 0x7D, 0x7E, 0x7F
+ST_INVALID_ACTION, ST_UNSUPPORTED_COMMAND, ST_INVALID_COMMAND, ST_UNSUPPORTED_ATTRIBUTE = 0x80, 0x81, 0x85, 0x86
+ST_CONSTRAINT_ERROR, ST_UNSUPPORTED_WRITE, ST_RESOURCE_EXHAUSTED, ST_NOT_FOUND = 0x87, 0x88, 0x89, 0x8B
+ST_DATA_VERSION_MISMATCH, ST_TIMEOUT, ST_BUSY, ST_UNSUPPORTED_CLUSTER = 0x92, 0x94, 0x9C, 0xC3
+ST_NEEDS_TIMED_INTERACTION, ST_TIMED_REQUEST_MISMATCH, ST_FAILSAFE_REQUIRED, ST_INVALID_IN_STATE = 0xC6, 0xC9, 0xCA, 0xCB
+
+PROTO_SC, PROTO_IM = 0x0000, 0x0001  # protocols: secure channel, interaction model
+SC_ACK, PBKDF_REQ, PBKDF_RSP, PAKE1, PAKE2, PAKE3 = 0x10, 0x20, 0x21, 0x22, 0x23, 0x24
+SIGMA1, SIGMA2, SIGMA3, SIGMA2_RESUME, STATUS_REPORT = 0x30, 0x31, 0x32, 0x33, 0x40
+IM_STATUS, IM_READ, IM_SUBSCRIBE, IM_SUBSCRIBE_RSP, IM_REPORT = 0x01, 0x02, 0x03, 0x04, 0x05
+IM_WRITE, IM_WRITE_RSP, IM_INVOKE, IM_INVOKE_RSP, IM_TIMED = 0x06, 0x07, 0x08, 0x09, 0x0A
+
+MRP_BASE, MRP_TRIES, MRP_ACK_DELAY = 0.3, 5, 0.2  # retransmission interval (s), transmissions, standalone ack delay
+IM_REPORT_BUDGET = 900  # bytes of attribute reports per message (IPv6 minimum MTU 1280)
+
+
+def _u16(v):
+    return struct.pack("<H", v)
+
+
+def _u32(v):
+    return struct.pack("<I", v)
+
+
+def _u64(v):
+    return struct.pack("<Q", v)
+
+
+class MatterSession:
+    def __init__(self, local_id, peer_id, kind, enc, dec, challenge, addr, local_node=0, peer_node=0, fabric=0,
+                 cats=()):
+        self.local_id, self.peer_id, self.kind = local_id, peer_id, kind
+        self.enc, self.dec, self.challenge, self.addr = enc, dec, challenge, addr
+        self.local_node, self.peer_node, self.fabric, self.cats = local_node, peer_node, fabric, list(cats)
+        self.tx = random.randint(1, 1 << 28)
+        self.rx_max, self.rx_bits = None, 0
+        self.last = time.monotonic()
+
+    def next_counter(self):
+        self.tx = (self.tx + 1) & 0xFFFFFFFF
+        return self.tx
+
+    def duplicate(self, ctr):
+        if self.rx_max is None or ctr > self.rx_max:
+            if self.rx_max is not None:
+                shift = ctr - self.rx_max
+                self.rx_bits = ((self.rx_bits << shift) | (1 << (shift - 1))) & 0xFFFFFFFF if shift <= 32 else 0
+            self.rx_max = ctr
+            return False
+        d = self.rx_max - ctr
+        if d == 0 or d > 32 or self.rx_bits & (1 << (d - 1)):
+            return True
+        self.rx_bits |= 1 << (d - 1)
+        return False
+
+
+class MatterExchange:
+    def __init__(self, key, xid, ours, session, addr, src_node=None):
+        self.key, self.xid, self.ours, self.session, self.addr = key, xid, ours, session, addr
+        self.src_node = src_node  # unsecured: the initiator's ephemeral node ID
+        self.ack, self.ack_due = None, 0.0
+        self.pending = None  # our reliable message waiting for its acknowledgement
+        self.state = None
+        self.timed_until, self.timed = None, False
+        self.last = time.monotonic()
+
+
+class MatterSub:
+    def __init__(self, sid, session, paths, min_s, max_s, filtered, fabric, node):
+        self.id, self.session, self.paths, self.min, self.max = sid, session, paths, min_s, max_s
+        self.filtered, self.fabric, self.node = filtered, fabric, node
+        self.dirty = set()
+        self.sent = {}  # (endpoint, cluster, attribute): the value last reported
+        self.last = time.monotonic()
+        self.inflight = False
+        self.active = False
+
+
+class MatterCluster:
+    def __init__(self, cid, rev, features=0):
+        self.id, self.rev, self.features = cid, rev, features
+        self.attrs, self.cmds = {}, {}
+        self.version = random.randint(0, 0xFFFFFFFF)
+
+    def attr(self, aid, get, set=None, write=PRIV_OPERATE, read=PRIV_VIEW, fabric=False, sensitive=False, timed=False):
+        self.attrs[aid] = dict(get=get, set=set, write=write, read=read, fabric=fabric, sensitive=sensitive,
+                               timed=timed)
+
+    def cmd(self, cid, fn, priv=PRIV_OPERATE, timed=False, resp=None):
+        self.cmds[cid] = dict(fn=fn, priv=priv, timed=timed, resp=resp)
+
+    def global_value(self, aid):
+        if aid == 0xFFF8:
+            return sorted({c["resp"] for c in self.cmds.values() if c["resp"] is not None})
+        if aid == 0xFFF9:
+            return sorted(self.cmds)
+        if aid == 0xFFFB:
+            return sorted(list(self.attrs) + [0xFFF8, 0xFFF9, 0xFFFB, 0xFFFC, 0xFFFD])
+        if aid == 0xFFFC:
+            return self.features
+        if aid == 0xFFFD:
+            return self.rev
+        return None
+
+
+class MatterCtx:
+    """Who is asking, over which session."""
+
+    def __init__(self, node, session, filtered=True):
+        self.node, self.session, self.filtered = node, session, filtered
+        self.fabric = session.fabric if session else 0
+        self.after = []  # actions once the response is sent
+
+    @property
+    def pase(self):
+        return self.session.kind == "pase"
+
+
+class MatterNode:
+    """store: load() -> dict, save(dict), protect(bytes) -> str, unprotect(str) -> bytes.
+    light: state() -> dict(on, level, hue, sat, x, y, ct, mode); apply(**changes); identify(seconds).
+    info: dict(product, vendor, version, version_int, url)."""
+
+    def __init__(self, store, light, info, attestation, log=print, watch=None, notify=None):
+        """watch: returns something that changes when the light changes elsewhere (checked twice a second);
+        notify: called when pairing opens or closes, or a controller is added or removed."""
+        self.store, self.light, self.info, self.log = store, light, info, log
+        self.debug = log if os.environ.get("GLOWBACK_MATTER_DEBUG") else (lambda m: None)
+        self.watch, self.notify = watch, notify or (lambda: None)
+        self.watched, self.next_watch = watch() if watch else None, 0.0
+        self.dac, self.pai, self.cd = attestation["dac"], attestation["pai"], attestation["cd"]
+        self.dac_key = ec_private_key(attestation["dac_key"])
+        self.vid, self.pid = attestation["vid"], attestation["pid"]
+        self.sock = None
+        self.mdns = None
+        self.sessions, self.exchanges, self.subs = {}, {}, {}
+        self.unsec_counter = random.randint(1, 1 << 28)
+        self.unsec_seen = {}
+        self.next_xid = random.randint(0, 0xFFFF)
+        self.failsafe = None
+        self.window = None
+        self.pase_failures = 0
+        self.calls = queue.Queue()
+        self.stopping = threading.Event()
+        self.thread = None
+        self.started = time.monotonic()
+        self.identify_until = 0.0
+        self.groups = {}
+        self._load()
+        self._build_model()
+
+    # ---- storage
+    def _load(self):
+        d = self.store.load() or {}
+        self.setup = d.get("setup")
+        if not self.setup:
+            pin = 0
+            while pin in MATTER_INVALID_PASSCODES:
+                pin = random.SystemRandom().randint(1, 99999998)
+            self.setup = dict(passcode=pin, discriminator=random.SystemRandom().randint(0, 4095),
+                              salt=os.urandom(32).hex(), iterations=2000, serial=os.urandom(8).hex().upper(),
+                              unique=os.urandom(16).hex().upper(), host=os.urandom(6).hex().upper())
+        self.w0, self.L = pase_verifier(self.setup["passcode"], bytes.fromhex(self.setup["salt"]),
+                                           self.setup["iterations"])
+        self.fabrics = {}
+        for f in d.get("fabrics", []):
+            fab = dict(index=f["index"], rcac=bytes.fromhex(f["rcac"]), icac=bytes.fromhex(f["icac"]) if f.get("icac")
+                       else None, noc=bytes.fromhex(f["noc"]), epoch=bytes.fromhex(f["epoch"]), vendor=f["vendor"],
+                       label=f.get("label", ""), key=int.from_bytes(self.store.unprotect(f["key"]), "big"),
+                       committed=True)
+            self._fabric_ids(fab)
+            self.fabrics[fab["index"]] = fab
+        self.acl = d.get("acl", [])
+        self.node_label = d.get("label", self.info.get("product", "Glowback"))
+        self.location = d.get("location", "XX")
+        self.regulatory = d.get("regulatory", 0)
+        self.reboots = d.get("reboots", 0) + 1
+        self._save()
+
+    def _save(self):
+        fabrics = [dict(index=f["index"], rcac=f["rcac"].hex(), icac=f["icac"].hex() if f["icac"] else None,
+                        noc=f["noc"].hex(), epoch=f["epoch"].hex(), vendor=f["vendor"], label=f["label"],
+                        key=self.store.protect(f["key"].to_bytes(32, "big")))
+                   for f in self.fabrics.values() if f["committed"]]
+        committed = {f["index"] for f in self.fabrics.values() if f["committed"]}
+        self.store.save(dict(setup=self.setup, fabrics=fabrics, acl=[a for a in self.acl if a["fabric"] in committed],
+                             label=self.node_label, location=self.location, regulatory=self.regulatory,
+                             reboots=self.reboots))
+
+    def _fabric_ids(self, fab):
+        root = cert_parse(fab["rcac"])
+        noc = cert_parse(fab["noc"])
+        fab["root_pub"] = root[9]
+        fab["fabric_id"] = cert_dn_value(noc[6], 21)
+        fab["node_id"] = cert_dn_value(noc[6], 17)
+        fab["cfid"] = compressed_fabric_id(fab["root_pub"], fab["fabric_id"])
+        fab["ipk"] = operational_ipk(fab["epoch"], fab["cfid"])
+
+    # ---- public API (any thread)
+    def start(self):
+        self.sock = socket.socket(socket.AF_INET6, socket.SOCK_DGRAM)
+        try:
+            self.sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 0)
+        except (AttributeError, OSError):
+            pass
+        self.sock.bind(("::", MATTER_PORT))
+        self.mdns = Mdns(self.setup["host"], self.log, self.debug)
+        self.thread = threading.Thread(target=self._run, name="glowback-matter", daemon=True)
+        self.thread.start()
+        self.call(self._advertise)
+        if not self.fabrics:
+            self.call(lambda: self.open_window(900))
+
+    def stop(self):
+        self.stopping.set()
+        if self.thread:
+            self.thread.join(3)
+        if self.mdns:
+            self.mdns.close()
+        if self.sock:
+            self.sock.close()
+
+    def call(self, fn):
+        self.calls.put(fn)
+
+    def light_changed(self):
+        """The light changed on the PC: tell the controllers that subscribed."""
+        self.call(lambda: [self._changed(1, c) for c in (0x0006, 0x0008, 0x0300)])
+
+    def pairing(self):
+        """What the app shows to pair a phone."""
+        s = self.setup
+        disc = self.window["discriminator"] if self.window and self.window["kind"] == "enhanced" else s["discriminator"]
+        return dict(qr=matter_qr_payload(self.vid, self.pid, s["discriminator"], s["passcode"]),
+                    code=matter_manual_code(s["discriminator"], s["passcode"]),
+                    open=bool(self.window), until=self.window["until"] if self.window else 0,
+                    enhanced=bool(self.window and self.window["kind"] == "enhanced"), discriminator=disc,
+                    fabrics=[dict(index=f["index"], label=f["label"], vendor=f["vendor"])
+                             for f in self.fabrics.values() if f["committed"]])
+
+    def open_window(self, seconds=900):
+        if self.failsafe:
+            return
+        self.window = dict(kind="basic", until=time.monotonic() + seconds, w0=self.w0, L=self.L,
+                           salt=bytes.fromhex(self.setup["salt"]), iterations=self.setup["iterations"],
+                           discriminator=self.setup["discriminator"], admin_fabric=None, admin_vendor=None,
+                           instance=os.urandom(8).hex().upper())
+        self.pase_failures = 0
+        self.log(f"Matter: ready to pair for {seconds // 60} min")
+        self._advertise()
+        self._changed(0, 0x003C)
+
+    def close_window(self):
+        if self.window:
+            self.window = None
+            self._advertise()
+            self._changed(0, 0x003C)
+
+    def remove_fabric(self, index):
+        if index in self.fabrics:
+            self._drop_fabric(index)
+
+    # ---- network thread
+    def _run(self):
+        while not self.stopping.is_set():
+            socks = [self.sock] + self.mdns.sockets()
+            try:
+                ready, _, _ = select.select(socks, [], [], 0.05)
+            except OSError:
+                ready = []
+            for s in ready:
+                try:
+                    data, addr = s.recvfrom(4096)
+                except OSError:
+                    continue
+                try:
+                    if s is self.sock:
+                        self._received(data, addr)
+                    else:
+                        self.mdns.received(s, data, addr)
+                except Exception as e:  # one bad message must not stop the device
+                    self.log(f"Matter: {e!r}")
+            while not self.calls.empty():
+                try:
+                    self.calls.get_nowait()()
+                except Exception as e:
+                    self.log(f"Matter: {e!r}")
+            try:
+                self._timers()
+            except Exception as e:
+                self.log(f"Matter: {e!r}")
+
+    def _timers(self):
+        now = time.monotonic()
+        for x in list(self.exchanges.values()):
+            if x.ack is not None and now >= x.ack_due:
+                self._send(x, PROTO_SC, SC_ACK, b"", reliable=False)
+            p = x.pending
+            if p and now >= p["next"]:
+                if p["tries"] >= MRP_TRIES:
+                    x.pending = None
+                    self._exchange_failed(x)
+                else:
+                    self._sendto(p["data"], x.addr)
+                    p["tries"] += 1
+                    p["next"] = now + self._backoff(p["tries"])
+            if not x.pending and x.ack is None and now - x.last > 60:
+                self.exchanges.pop(x.key, None)
+        if self.failsafe and now >= self.failsafe["until"]:
+            self.log("Matter: pairing timed out")
+            self._expire_failsafe()
+        if self.window and now >= self.window["until"]:
+            self.close_window()
+        if self.identify_until and now >= self.identify_until:
+            self.identify_until = 0
+            self._changed(1, 0x0003)
+        if self.watch and now >= self.next_watch:
+            self.next_watch = now + 0.5
+            seen = self.watch()
+            if seen != self.watched:
+                self.watched = seen
+                for cid in (0x0006, 0x0008, 0x0300):
+                    self._changed(1, cid)
+        for sub in list(self.subs.values()):
+            if not sub.active or sub.inflight:
+                continue
+            if (sub.dirty and now - sub.last >= sub.min) or now - sub.last >= sub.max:
+                self._report(sub)
+        self.mdns.tick()
+
+    @staticmethod
+    def _backoff(tries):
+        return MRP_BASE * 1.1 * 1.6 ** max(0, tries - 1) * (1 + random.random() * 0.25)
+
+    def _sendto(self, data, addr):
+        try:
+            self.sock.sendto(data, addr)
+        except OSError as e:
+            self.log(f"Matter: send to {addr[0]} failed ({e})")
+
+    # ---- messages
+    def _received(self, data, addr):
+        if len(data) < 8 or data[0] >> 4:
+            return
+        flags, sid, secf, ctr = data[0], struct.unpack_from("<H", data, 1)[0], data[3], struct.unpack_from("<I", data, 4)[0]
+        pos, src = 8, None
+        if flags & 0x04:
+            src = struct.unpack_from("<Q", data, pos)[0]
+            pos += 8
+        if flags & 3 == 1:
+            pos += 8
+        elif flags & 3 == 2:
+            return  # group messages: not supported
+        if secf & 0x20:
+            pos += 2 + struct.unpack_from("<H", data, pos)[0]
+        if secf & 0x03:
+            return
+        header, body = data[:pos], data[pos:]
+        if sid == 0:
+            session = None
+            key = ("u", addr[0], src)
+            seen = self.unsec_seen.setdefault(key, set())
+            dup = ctr in seen
+            seen.add(ctr)
+            if len(seen) > 64:
+                seen.discard(min(seen))
+            payload = body
+        else:
+            session = self.sessions.get(sid)
+            if not session:
+                self.debug(f"Matter < {addr[0]} for unknown session {sid}")
+                return
+            nonce = bytes([secf]) + _u32(ctr) + _u64(session.peer_node if session.kind == "case" else 0)
+            payload = ccm_decrypt(session.dec, nonce, body, header)
+            if payload is None:
+                self.debug(f"Matter < {addr[0]} {session.kind} message that does not decrypt")
+                return
+            dup = session.duplicate(ctr)
+            session.addr, session.last = addr, time.monotonic()
+        if len(payload) < 6:
+            return
+        xf, op, xid = payload[0], payload[1], struct.unpack_from("<H", payload, 2)[0]
+        p = 4
+        if xf & 0x10:
+            p += 2
+        proto = struct.unpack_from("<H", payload, p)[0]
+        p += 2
+        acked = None
+        if xf & 0x02:
+            acked = struct.unpack_from("<I", payload, p)[0]
+            p += 4
+        if xf & 0x08:
+            p += 2 + struct.unpack_from("<H", payload, p)[0]
+        app = payload[p:]
+        skey = session.local_id if session else ("u", addr[0], src)
+        ours = not (xf & 0x01)  # the peer did not initiate: an exchange we started
+        key = (skey, xid, ours)
+        x = self.exchanges.get(key)
+        if acked is not None and x and x.pending and x.pending["ctr"] == acked:
+            x.pending = None
+            if x.state and x.state[0] == "close-after-ack":
+                self.exchanges.pop(key, None)
+        if dup:
+            if xf & 0x04:
+                tmp = x or MatterExchange(key, xid, ours, session, addr, src)
+                tmp.ack = ctr
+                self._send(tmp, PROTO_SC, SC_ACK, b"", reliable=False)
+            return
+        if x is None:
+            if ours:
+                return  # reply on an exchange we no longer track
+            x = self.exchanges[key] = MatterExchange(key, xid, False, session, addr, src)
+        x.addr, x.last = addr, time.monotonic()
+        if xf & 0x04:
+            x.ack, x.ack_due = ctr, time.monotonic() + MRP_ACK_DELAY
+        if proto == PROTO_SC and op == SC_ACK:
+            return
+        self.debug(f"Matter < {addr[0]} {session.kind if session else 'unsecured'} proto {proto} op {op:#04x} "
+                   f"x{xid}{' (ours)' if ours else ''} {len(app)} B")
+        if proto == PROTO_SC:
+            self._secure_channel(x, op, app)
+        elif proto == PROTO_IM and session:
+            self._interaction(x, op, app)
+
+    def _send(self, x, proto, op, payload, reliable=True):
+        xf = (0x01 if x.ours else 0) | (0x02 if x.ack is not None else 0) | (0x04 if reliable else 0)
+        ph = bytes([xf, op]) + _u16(x.xid) + _u16(proto) + (_u32(x.ack) if x.ack is not None else b"") + payload
+        x.ack = None
+        s = x.session
+        if op != SC_ACK:
+            self.debug(f"Matter > {x.addr[0]} {s.kind if s else 'unsecured'} proto {proto} op {op:#04x} x{x.xid} "
+                       f"{len(payload)} B")
+        if s:
+            ctr = s.next_counter()
+            header = b"\x00" + _u16(s.peer_id) + b"\x00" + _u32(ctr)
+            nonce = b"\x00" + _u32(ctr) + _u64(s.local_node if s.kind == "case" else 0)
+            data = header + ccm_encrypt(s.enc, nonce, ph, header)
+        else:
+            self.unsec_counter = (self.unsec_counter + 1) & 0xFFFFFFFF
+            ctr = self.unsec_counter
+            if x.src_node is not None:
+                header = b"\x01" + _u16(0) + b"\x00" + _u32(ctr) + _u64(x.src_node)
+            else:
+                header = b"\x00" + _u16(0) + b"\x00" + _u32(ctr)
+            data = header + ph
+        self._sendto(data, x.addr)
+        x.last = time.monotonic()
+        if reliable:
+            x.pending = dict(ctr=ctr, data=data, tries=1, next=time.monotonic() + self._backoff(1))
+
+    def _new_exchange(self, session):
+        self.next_xid = (self.next_xid + 1) & 0xFFFF
+        key = (session.local_id, self.next_xid, True)
+        x = self.exchanges[key] = MatterExchange(key, self.next_xid, True, session, session.addr)
+        return x
+
+    def _exchange_failed(self, x):
+        if x.state and x.state[0] == "sub":
+            sub = x.state[1]
+            self.log("Matter: a controller stopped answering; its subscription ends")
+            self.subs.pop(sub.id, None)
+        self.exchanges.pop(x.key, None)
+
+    def _status_report(self, x, general, code, proto=PROTO_SC):
+        self._send(x, PROTO_SC, STATUS_REPORT, _u16(general) + _u32(proto) + _u16(code))
+
+    # ---- secure channel: PASE (commissioning) and CASE (operational)
+    def _secure_channel(self, x, op, app):
+        if op == STATUS_REPORT:
+            if len(app) >= 8 and x.session and struct.unpack_from("<H", app, 6)[0] == 3:  # CloseSession
+                self._close_session(x.session.local_id)
+            return
+        if x.session:
+            return
+        try:
+            msg = tlv_decode(app)
+        except Exception:
+            return self._status_report(x, 1, 2)
+        if op == PBKDF_REQ:
+            self._pbkdf(x, msg, app)
+        elif op == PAKE1 and x.state and x.state[0] == "pase":
+            self._pake1(x, msg)
+        elif op == PAKE3 and x.state and x.state[0] == "pase2":
+            self._pake3(x, msg)
+        elif op == SIGMA1:
+            self._sigma1(x, msg, app)
+        elif op == SIGMA3 and x.state and x.state[0] == "case":
+            self._sigma3(x, msg, app)
+        else:
+            self._status_report(x, 1, 2)
+
+    def _local_session_id(self):
+        while True:
+            sid = random.randint(1, 0xFFFF)
+            if sid not in self.sessions:
+                return sid
+
+    @staticmethod
+    def _session_params():
+        return {1: 500, 2: 300, 3: 4000, 4: MATTER_DM_REVISION, 5: IM_REVISION, 6: MATTER_SPEC_VERSION, 7: 1}
+
+    def _pbkdf(self, x, msg, raw):
+        w = self.window
+        if not w or self.failsafe and self.failsafe.get("pase_busy"):
+            return self._status_report(x, 1, 4)  # busy: not pairing now
+        resp = {1: msg[1], 2: os.urandom(32), 3: self._local_session_id()}
+        if not msg.get(4):
+            resp[4] = {1: w["iterations"], 2: w["salt"]}
+        resp[5] = self._session_params()
+        out = tlv_encode(resp)
+        context = sha256(b"CHIP PAKE V1 Commissioning" + raw + out)
+        x.state = ("pase", dict(context=context, peer_sid=msg[2], local_sid=resp[3],
+                                verifier=Spake2pVerifier(context, w["w0"], w["L"])))
+        self._send(x, PROTO_SC, PBKDF_RSP, out)
+
+    def _pake1(self, x, msg):
+        st = x.state[1]
+        try:
+            Y, cB = st["verifier"].respond(msg[1])
+        except (ValueError, KeyError):
+            return self._status_report(x, 1, 2)
+        x.state = ("pase2", st)
+        self._send(x, PROTO_SC, PAKE2, tlv_encode({1: Y, 2: cB}))
+
+    def _pake3(self, x, msg):
+        st = x.state[1]
+        x.state = None
+        if not st["verifier"].check(msg.get(1, b"")):
+            self.pase_failures += 1
+            self.log("Matter: wrong setup code")
+            if self.pase_failures >= 20:
+                self.close_window()
+            return self._status_report(x, 1, 2)
+        keys = hkdf(st["verifier"].Ke, b"", b"SessionKeys", 48)
+        s = MatterSession(st["local_sid"], st["peer_sid"], "pase", enc=keys[16:32], dec=keys[:16], challenge=keys[32:],
+                    addr=x.addr)
+        self.sessions[s.local_id] = s
+        self._status_report(x, 0, 0)
+        self.log("Matter: a phone is pairing")
+
+    def _sigma1(self, x, msg, raw):
+        if msg.get(6) is not None:
+            pass  # resumption is declined: a full handshake follows
+        fab = None
+        for f in self.fabrics.values():
+            dest = hmac256(f["ipk"], msg[1] + f["root_pub"] + _u64(f["fabric_id"]) + _u64(f["node_id"]))
+            if dest == msg[3]:
+                fab = f
+                break
+        if not fab:
+            self.debug(f"Matter   Sigma1 for no fabric of ours ({len(self.fabrics)} fabrics)")
+            return self._status_report(x, 1, 1)  # no shared trust roots
+        d, Q = ec_keypair()
+        eph = ec_encode(Q)
+        shared = ecdh(d, msg[4])
+        rnd = os.urandom(32)
+        sid = self._local_session_id()
+        tbs = {1: fab["noc"]}
+        if fab["icac"]:
+            tbs[2] = fab["icac"]
+        tbs.update({3: eph, 4: msg[4]})
+        sig = ecdsa_sign(fab["key"], tlv_encode(tbs))
+        tbe = {1: fab["noc"]}
+        if fab["icac"]:
+            tbe[2] = fab["icac"]
+        tbe.update({3: sig, 4: os.urandom(16)})
+        s2k = hkdf(shared, fab["ipk"] + rnd + eph + sha256(raw), b"Sigma2", 16)
+        enc = ccm_encrypt(s2k, b"NCASE_Sigma2N", tlv_encode(tbe))
+        out = tlv_encode({1: rnd, 2: sid, 3: eph, 4: enc, 5: self._session_params()})
+        x.state = ("case", dict(fab=fab, shared=shared, msg1=raw, msg2=out, eph=eph, peer_eph=msg[4],
+                                peer_sid=msg[2], local_sid=sid))
+        self._send(x, PROTO_SC, SIGMA2, out)
+
+    def _sigma3(self, x, msg, raw):
+        st = x.state[1]
+        x.state = None
+        fab = st["fab"]
+        s3k = hkdf(st["shared"], fab["ipk"] + sha256(st["msg1"] + st["msg2"]), b"Sigma3", 16)
+        plain = ccm_decrypt(s3k, b"NCASE_Sigma3N", msg.get(1, b""))
+        if plain is None:
+            return self._status_report(x, 1, 2)
+        try:
+            tbe = tlv_decode(plain)
+            fabric_id, node_id, cats = cert_verify_chain(tbe[1], tbe.get(2), fab["rcac"])
+            if fabric_id != fab["fabric_id"]:
+                raise ValueError("other fabric")
+            tbs = {1: tbe[1]}
+            if tbe.get(2):
+                tbs[2] = tbe[2]
+            tbs.update({3: st["peer_eph"], 4: st["eph"]})
+            if not ecdsa_verify(cert_parse(tbe[1])[9], tlv_encode(tbs), tbe[3]):
+                raise ValueError("signature")
+        except Exception as e:
+            self.log(f"Matter: refused a controller ({e})")
+            return self._status_report(x, 1, 2)
+        keys = hkdf(st["shared"], fab["ipk"] + sha256(st["msg1"] + st["msg2"] + raw), b"SessionKeys", 48)
+        s = MatterSession(st["local_sid"], st["peer_sid"], "case", enc=keys[16:32], dec=keys[:16], challenge=keys[32:],
+                    addr=x.addr, local_node=fab["node_id"], peer_node=node_id, fabric=fab["index"], cats=cats)
+        self.sessions[s.local_id] = s
+        self._status_report(x, 0, 0)
+
+    def _close_session(self, sid):
+        self.sessions.pop(sid, None)
+        for sub in [s for s in self.subs.values() if s.session == sid]:
+            self.subs.pop(sub.id, None)
+        for key in [k for k, x in self.exchanges.items() if x.session and x.session.local_id == sid]:
+            self.exchanges.pop(key, None)
+
+    # ---- access control
+    def privilege(self, ctx, endpoint, cluster):
+        s = ctx.session
+        if s.kind == "pase":
+            return PRIV_ADMIN
+        best = 0
+        for e in self.acl:
+            if e["fabric"] != s.fabric or e["auth"] != CASE_AUTH:
+                continue
+            subjects = e.get("subjects")
+            if subjects:
+                hit = s.peer_node in subjects
+                for sub in subjects:
+                    if sub >> 32 == 0xFFFFFFFD and any((c >> 16) == ((sub >> 16) & 0xFFFF) and
+                                                       (c & 0xFFFF) >= (sub & 0xFFFF) for c in s.cats):
+                        hit = True
+                if not hit:
+                    continue
+            targets = e.get("targets")
+            if targets:
+                ok = False
+                for t in targets:
+                    if (t.get("cluster") in (None, cluster)) and (t.get("endpoint") in (None, endpoint)) and \
+                            (t.get("device") is None or t.get("device") == self._device_type(endpoint)):
+                        ok = True
+                if not ok:
+                    continue
+            best = max(best, e["privilege"])
+        return best
+
+    @staticmethod
+    def _device_type(endpoint):
+        return DEVICE_TYPE_ROOT if endpoint == 0 else DEVICE_TYPE_LIGHT
+
+    # ---- interaction model
+    def _interaction(self, x, op, app):
+        try:
+            msg = tlv_decode(app) if app else {}
+        except Exception:
+            return self._im_status(x, ST_INVALID_ACTION)
+        if op == IM_STATUS:
+            return self._im_status_received(x, msg)
+        if op == IM_TIMED:
+            x.timed_until = time.monotonic() + msg.get(0, 0) / 1000
+            return self._im_status(x, ST_OK, close=False)  # the write or invoke follows on this exchange
+        timed = x.timed_until
+        x.timed_until = None
+        x.timed = timed is not None
+        if op in (IM_WRITE, IM_INVOKE):
+            flag = bool(msg.get(1, False))
+            if flag != (timed is not None):
+                return self._im_status(x, ST_TIMED_REQUEST_MISMATCH)
+            if timed is not None and time.monotonic() > timed:
+                return self._im_status(x, ST_TIMEOUT)
+        if op == IM_READ:
+            self._read(x, msg)
+        elif op == IM_SUBSCRIBE:
+            self._subscribe(x, msg)
+        elif op == IM_WRITE:
+            self._write(x, msg)
+        elif op == IM_INVOKE:
+            self._invoke(x, msg)
+        else:
+            self._im_status(x, ST_INVALID_ACTION)
+
+    def _im_status(self, x, status, close=True):
+        self._send(x, PROTO_IM, IM_STATUS, tlv_encode({0: status, 0xFF: IM_REVISION}))
+        if close:
+            x.state = ("close-after-ack",)
+
+    def _im_status_received(self, x, msg):
+        st = x.state
+        self.debug(f"Matter   status {msg.get(0)} on {st[0] if st else None}")
+        if not st:
+            return
+        if msg.get(0, ST_OK) != ST_OK:
+            if st[0] in ("sub", "prime"):
+                self.subs.pop(st[1].id, None)
+            x.state = None
+            self.exchanges.pop(x.key, None)
+            return
+        if st[0] in ("chunks", "prime", "sub") and st[2]:
+            self._send_chunk(x)
+        elif st[0] == "prime":
+            sub = st[1]
+            sub.active, sub.last = True, time.monotonic()
+            self._send(x, PROTO_IM, IM_SUBSCRIBE_RSP, tlv_encode({0: sub.id, 2: sub.max, 0xFF: IM_REVISION}))
+            x.state = ("close-after-ack",)
+        elif st[0] == "sub":
+            sub = st[1]
+            sub.inflight, sub.last = False, time.monotonic()
+            self._send(x, PROTO_SC, SC_ACK, b"", reliable=False)
+            x.state = None
+            self.exchanges.pop(x.key, None)
+
+    # paths and values
+    def _endpoints(self):
+        return self.model
+
+    def _expand(self, ctx, path):
+        """[(endpoint, cluster, attribute)] for a path, and the error for a concrete path that does not exist."""
+        ep, cid, aid = path.get(2), path.get(3), path.get(4)
+        if ep is not None and ep not in self.model:
+            return [], ST_UNSUPPORTED_ENDPOINT
+        out = []
+        for e in ([ep] if ep is not None else sorted(self.model)):
+            clusters = self.model[e]
+            if cid is not None and cid not in clusters:
+                if ep is not None:
+                    return [], ST_UNSUPPORTED_CLUSTER
+                continue
+            for c in ([cid] if cid is not None else sorted(clusters)):
+                cl = clusters[c]
+                ids = sorted(list(cl.attrs) + [0xFFF8, 0xFFF9, 0xFFFB, 0xFFFC, 0xFFFD])
+                if aid is not None and aid not in ids:
+                    if ep is not None and cid is not None:
+                        return [], ST_UNSUPPORTED_ATTRIBUTE
+                    continue
+                for a in ([aid] if aid is not None else ids):
+                    out.append((e, c, a))
+        return out, None
+
+    def _value(self, ctx, ep, cid, aid):
+        cl = self.model[ep][cid]
+        if aid >= 0xFFF8:
+            return cl.global_value(aid)
+        a = cl.attrs[aid]
+        v = a["get"](ctx)
+        if a["fabric"]:
+            out = []
+            for item in v:
+                if item.get(0xFE) == ctx.fabric:
+                    out.append(item)
+                elif not ctx.filtered:
+                    out.append({0xFE: item[0xFE]} if a["sensitive"] else item)
+            v = out
+        return v
+
+    def _collect(self, ctx, paths, dv_filters=None, only=None, sub=None):
+        """Attribute reports (each one TLV-encoded) for paths; only: restrict to these (endpoint, cluster, attr);
+        sub: a subscription's report, which leaves out the values it already sent."""
+        skip = set()
+        for f in dv_filters or []:
+            p = f.get(0)
+            if p is not None:
+                ep, cid = p.get(1), p.get(2)
+                if ep in self.model and cid in self.model[ep] and self.model[ep][cid].version == f.get(1):
+                    skip.add((ep, cid))
+        reports, done = [], set()
+        for path in paths:
+            items, err = self._expand(ctx, path)
+            concrete = path.get(2) is not None and path.get(3) is not None and path.get(4) is not None
+            if err is not None:
+                reports.append(tlv_encode(self._status_ib(path.get(2), path.get(3), path.get(4), err)))
+                continue
+            for ep, cid, aid in items:
+                if (ep, cid, aid) in done or (ep, cid) in skip or (only is not None and (ep, cid, aid) not in only):
+                    continue
+                done.add((ep, cid, aid))
+                cl = self.model[ep][cid]
+                need = cl.attrs[aid]["read"] if aid in cl.attrs else PRIV_VIEW
+                if self.privilege(ctx, ep, cid) < need:
+                    if concrete:
+                        reports.append(tlv_encode(self._status_ib(ep, cid, aid, ST_UNSUPPORTED_ACCESS)))
+                    continue
+                value = self._value(ctx, ep, cid, aid)
+                if sub is not None:
+                    if only is not None and (ep, cid, aid) in sub.sent and sub.sent[(ep, cid, aid)] == value:
+                        continue
+                    sub.sent[(ep, cid, aid)] = value
+                reports.extend(self._data_ibs(ep, cid, aid, value, cl.version))
+        return reports
+
+    @staticmethod
+    def _path(ep, cid, aid, append=False):
+        p = TList([(2, ep), (3, cid), (4, aid)])
+        if append:
+            p.append((5, None))
+        return p
+
+    def _status_ib(self, ep, cid, aid, status):
+        return {0: {0: self._path(ep, cid, aid), 1: {0: status}}}
+
+    def _data_ibs(self, ep, cid, aid, value, version):
+        whole = tlv_encode({1: {0: version, 1: self._path(ep, cid, aid), 2: value}})
+        if len(whole) <= IM_REPORT_BUDGET or not isinstance(value, list):
+            return [whole]
+        out = [tlv_encode({1: {0: version, 1: self._path(ep, cid, aid), 2: []}})]  # a long list goes item by item
+        for item in value:
+            out.append(tlv_encode({1: {0: version, 1: self._path(ep, cid, aid, True), 2: item}}))
+        return out
+
+    @staticmethod
+    def _chunks(reports):
+        chunks, cur, size = [], [], 0
+        for r in reports:
+            if cur and size + len(r) > IM_REPORT_BUDGET:
+                chunks.append(cur)
+                cur, size = [], 0
+            cur.append(r)
+            size += len(r)
+        chunks.append(cur)
+        return chunks
+
+    def _report_msg(self, reports, sub_id=None, more=False, suppress=False):
+        body = b""
+        if sub_id is not None:
+            body += tlv_encode(sub_id, 0)
+        if reports:
+            body += b"\x36\x01" + b"".join(reports) + b"\x18"  # AttributeReports: array, context tag 1
+        if more:
+            body += tlv_encode(True, 3)
+        if suppress:
+            body += tlv_encode(True, 4)
+        body += tlv_encode(IM_REVISION, 0xFF)
+        return b"\x15" + body + b"\x18"
+
+    def _send_chunk(self, x):
+        kind, obj, chunks = x.state
+        chunk = chunks.pop(0)
+        sub_id = obj.id if obj is not None else None
+        last = not chunks
+        if kind == "chunks":  # a read: the last chunk needs no answer
+            self._send(x, PROTO_IM, IM_REPORT, self._report_msg(chunk, None, more=not last, suppress=last))
+            if last:
+                x.state = ("close-after-ack",)
+        else:
+            self._send(x, PROTO_IM, IM_REPORT, self._report_msg(chunk, sub_id, more=not last))
+
+    def _read(self, x, msg):
+        ctx = MatterCtx(self, x.session, bool(msg.get(3, True)))
+        reports = self._collect(ctx, msg.get(0, []), msg.get(4))
+        self.debug("Matter   read " + " ".join(f"{p.get(2)}/{p.get(3)}/{p.get(4)}" for p in msg.get(0, [])) +
+                   f" events={len(msg.get(1) or [])} -> {len(reports)} reports")
+        x.state = ("chunks", None, self._chunks(reports))
+        self._send_chunk(x)
+
+    def _subscribe(self, x, msg):
+        s = x.session
+        if not msg.get(0, False):
+            for sub in [v for v in self.subs.values() if v.fabric == s.fabric and v.node == s.peer_node]:
+                self.subs.pop(sub.id, None)
+        floor, ceiling = msg.get(1, 0), msg.get(2, 60)
+        sub = MatterSub(random.randint(1, 0xFFFFFFFF), s.local_id, msg.get(3, []), floor, max(floor, ceiling, 1),
+                  bool(msg.get(7, True)), s.fabric, s.peer_node)
+        self.subs[sub.id] = sub
+        ctx = MatterCtx(self, s, sub.filtered)
+        reports = self._collect(ctx, sub.paths, msg.get(8), sub=sub)
+        x.state = ("prime", sub, self._chunks(reports))
+        self._send_chunk(x)
+
+    def _report(self, sub):
+        s = self.sessions.get(sub.session)
+        if not s:
+            self.subs.pop(sub.id, None)
+            return
+        dirty, sub.dirty = sub.dirty, set()
+        reports = self._collect(MatterCtx(self, s, sub.filtered), sub.paths, only=dirty, sub=sub) if dirty else []
+        x = self._new_exchange(s)
+        sub.inflight = True
+        x.state = ("sub", sub, self._chunks(reports))
+        self._send_chunk(x)
+
+    def _changed(self, ep, cid, aid=None):
+        """An attribute changed: new data version, and pending reports for the subscriptions that cover it."""
+        if ep not in self.model or cid not in self.model[ep]:
+            return
+        cl = self.model[ep][cid]
+        cl.version = (cl.version + 1) & 0xFFFFFFFF
+        aids = [aid] if aid is not None else list(cl.attrs)
+        for sub in self.subs.values():
+            for path in sub.paths:
+                pe, pc, pa = path.get(2), path.get(3), path.get(4)
+                if pe in (None, ep) and pc in (None, cid):
+                    for a in aids:
+                        if pa in (None, a):
+                            sub.dirty.add((ep, cid, a))
+
+    def _write(self, x, msg):
+        ctx = MatterCtx(self, x.session)
+        ctx.privileges = {}  # checked against the ACL as it was before this write (an admin rewriting the ACL)
+        for item in msg.get(2, []):
+            p = item.get(1, TList())
+            if p.get(2) in self.model and p.get(3) in self.model[p.get(2)]:
+                ctx.privileges[(p.get(2), p.get(3))] = self.privilege(ctx, p.get(2), p.get(3))
+        results = []
+        for item in msg.get(2, []):
+            path = item.get(1, TList())
+            ep, cid, aid = path.get(2), path.get(3), path.get(4)
+            append = any(t == 5 for t, _ in path)
+            status = self._write_one(ctx, ep, cid, aid, item.get(2), item.get(0), append, x)
+            results.append({0: self._path(ep, cid, aid), 1: {0: status}})
+        self._send(x, PROTO_IM, IM_WRITE_RSP, tlv_encode({0: results, 0xFF: IM_REVISION}))
+        if not msg.get(3):
+            x.state = ("close-after-ack",)
+        for fn in ctx.after:
+            fn()
+
+    def _write_one(self, ctx, ep, cid, aid, value, version, append, x):
+        if ep is None or cid is None or aid is None:
+            return ST_UNSUPPORTED_ATTRIBUTE
+        if ep not in self.model:
+            return ST_UNSUPPORTED_ENDPOINT
+        if cid not in self.model[ep]:
+            return ST_UNSUPPORTED_CLUSTER
+        cl = self.model[ep][cid]
+        a = cl.attrs.get(aid)
+        if a is None:
+            return ST_UNSUPPORTED_ATTRIBUTE if aid < 0xFFF8 else ST_UNSUPPORTED_WRITE
+        if a["set"] is None:
+            return ST_UNSUPPORTED_WRITE
+        if ctx.privileges.get((ep, cid), 0) < a["write"]:
+            return ST_UNSUPPORTED_ACCESS
+        if a["timed"] and not getattr(x, "timed", False):
+            return ST_NEEDS_TIMED_INTERACTION
+        if version is not None and version != cl.version:
+            return ST_DATA_VERSION_MISMATCH
+        try:
+            status = a["set"](ctx, value, append)
+        except (KeyError, TypeError, ValueError, AttributeError):
+            return ST_CONSTRAINT_ERROR
+        if status in (None, ST_OK):
+            self._changed(ep, cid, aid)
+            return ST_OK
+        return status
+
+    def _invoke(self, x, msg):
+        reqs = msg.get(2, [])
+        if len(reqs) != 1:
+            return self._im_status(x, ST_INVALID_ACTION)
+        cd = reqs[0]
+        path = cd.get(0, TList())
+        ep, cid, cmd_id = path.get(0), path.get(1), path.get(2)
+        ref = cd.get(2)
+        ctx = MatterCtx(self, x.session)
+        result = self._invoke_one(ctx, ep, cid, cmd_id, cd.get(1, {}), bool(msg.get(1, False)))
+        self.debug(f"Matter   invoke {ep}/{cid:#06x}/{cmd_id:#04x} -> "
+                   f"{result if not isinstance(result, tuple) else (result[0], str(result[1])[:120])}")
+        if isinstance(result, tuple) and len(result) == 2 and isinstance(result[1], dict):
+            resp_id, fields = result
+            ib = {0: {0: TList([(0, ep), (1, cid), (2, resp_id)]), 1: fields}}
+            if ref is not None:
+                ib[0][2] = ref
+        else:
+            status, cluster_status = (result if isinstance(result, tuple) else (result, None))
+            st = {0: status}
+            if cluster_status is not None:
+                st[1] = cluster_status
+            ib = {1: {0: TList([(0, ep), (1, cid), (2, cmd_id)]), 1: st}}
+            if ref is not None:
+                ib[1][2] = ref
+        self._send(x, PROTO_IM, IM_INVOKE_RSP, tlv_encode({0: False, 1: [ib], 0xFF: IM_REVISION}))
+        x.state = ("close-after-ack",)
+        for fn in ctx.after:
+            fn()
+
+    def _invoke_one(self, ctx, ep, cid, cmd_id, fields, timed):
+        if ep not in self.model:
+            return ST_UNSUPPORTED_ENDPOINT
+        if cid not in self.model[ep]:
+            return ST_UNSUPPORTED_CLUSTER
+        c = self.model[ep][cid].cmds.get(cmd_id)
+        if c is None:
+            return ST_UNSUPPORTED_COMMAND
+        if self.privilege(ctx, ep, cid) < c["priv"]:
+            return ST_UNSUPPORTED_ACCESS
+        if c["timed"] and not timed:
+            return ST_NEEDS_TIMED_INTERACTION
+        try:
+            r = c["fn"](ctx, fields if isinstance(fields, dict) else {})
+        except (KeyError, TypeError, ValueError):
+            return ST_INVALID_COMMAND
+        return ST_OK if r is None else r
+
+    # ---- fabrics and commissioning
+    def _expire_failsafe(self):
+        fs, self.failsafe = self.failsafe, None
+        if not fs:
+            return
+        idx = fs.get("new_fabric")
+        if idx in self.fabrics and not self.fabrics[idx]["committed"]:
+            self._drop_fabric(idx, save=False)
+        for s in [s for s in self.sessions.values() if s.kind == "pase"]:
+            self._close_session(s.local_id)
+        self.breadcrumb = 0
+        self._changed(0, 0x0030)
+
+    def _drop_fabric(self, index, save=True):
+        self.fabrics.pop(index, None)
+        self.acl = [a for a in self.acl if a["fabric"] != index]
+        for s in [s for s in self.sessions.values() if s.fabric == index]:
+            self._close_session(s.local_id)
+        self._advertise()
+        for cid in (0x003E, 0x001F):
+            self._changed(0, cid)
+        if save:
+            self._save()
+            self.log(f"Matter: removed a controller ({len(self.committed())} left)")
+
+    def committed(self):
+        return [f for f in self.fabrics.values() if f["committed"]]
+
+    def _advertise(self):
+        if not self.mdns:
+            return
+        services = []
+        w = self.window
+        if w:
+            disc = w["discriminator"]
+            txt = {"D": str(disc), "CM": "2" if w["kind"] == "enhanced" else "1", "VP": f"{self.vid}+{self.pid}",
+                   "DT": str(DEVICE_TYPE_LIGHT), "DN": self.node_label[:32], "SII": "500", "SAI": "300", "T": "0"}
+            subs = [f"_L{disc}", f"_S{disc >> 8}", f"_V{self.vid}", f"_T{DEVICE_TYPE_LIGHT}", "_CM"]
+            services.append(("_matterc._udp", w["instance"], subs, txt))
+        for f in self.fabrics.values():
+            cf = f["cfid"].hex().upper()
+            services.append(("_matter._tcp", f"{cf}-{f['node_id']:016X}", [f"_I{cf}"],
+                             {"SII": "500", "SAI": "300", "T": "0"}))
+        self.mdns.publish(services, MATTER_PORT)
+        try:
+            self.notify()
+        except Exception as e:
+            self.log(f"Matter: {e!r}")
+
+    def identify(self, seconds):
+        self.identify_until = time.monotonic() + seconds if seconds else 0
+        try:
+            self.light.identify(seconds)
+        except Exception as e:
+            self.log(f"Matter: identify: {e!r}")
+        self._changed(1, 0x0003)
+
+    # ---- the data model
+    def _build_model(self):
+        self.breadcrumb = 0
+        light = self.light
+        st = lambda: light.state()  # noqa: E731
+
+        def apply(**kw):
+            light.apply(**kw)
+            if self.watch:
+                self.watched = self.watch()  # reported below: not twice
+            for cid in (0x0006, 0x0008, 0x0300):
+                self._changed(1, cid)
+
+        # endpoint 0: the node
+        desc0 = MatterCluster(0x001D, 2)
+        acl = MatterCluster(0x001F, 1)
+        basic = MatterCluster(0x0028, 3)
+        gcom = MatterCluster(0x0030, 1)
+        net = MatterCluster(0x0031, 1, features=0x04)  # Ethernet
+        diag = MatterCluster(0x0033, 2)
+        admin = MatterCluster(0x003C, 1)
+        opc = MatterCluster(0x003E, 1)
+        gkm = MatterCluster(0x003F, 1)
+        ep0 = [desc0, acl, basic, gcom, net, diag, admin, opc, gkm]
+        # endpoint 1: the light
+        desc1 = MatterCluster(0x001D, 2)
+        ident = MatterCluster(0x0003, 4)
+        groups = MatterCluster(0x0004, 4)
+        onoff = MatterCluster(0x0006, 6, features=0x01)  # Lighting
+        level = MatterCluster(0x0008, 5, features=0x03)  # OnOff, Lighting
+        color = MatterCluster(0x0300, 6, features=0x19)  # HueSaturation, XY, ColorTemperature
+        ep1 = [desc1, ident, groups, onoff, level, color]
+        self.model = {0: {c.id: c for c in ep0}, 1: {c.id: c for c in ep1}}
+
+        desc0.attr(0, lambda c: [{0: DEVICE_TYPE_ROOT, 1: 2}])
+        desc0.attr(1, lambda c: sorted(self.model[0]))
+        desc0.attr(2, lambda c: [])
+        desc0.attr(3, lambda c: [1])
+        desc1.attr(0, lambda c: [{0: DEVICE_TYPE_LIGHT, 1: 4}])
+        desc1.attr(1, lambda c: sorted(self.model[1]))
+        desc1.attr(2, lambda c: [])
+        desc1.attr(3, lambda c: [])
+
+        # Access Control
+        def acl_get(c):
+            out = []
+            for e in self.acl:
+                out.append({1: e["privilege"], 2: e["auth"],
+                            3: e["subjects"] if e.get("subjects") else None,
+                            4: [{0: t.get("cluster"), 1: t.get("endpoint"), 2: t.get("device")}
+                                for t in e["targets"]] if e.get("targets") else None,
+                            0xFE: e["fabric"]})
+            return out
+
+        def acl_entry(c, v):
+            if not isinstance(v, dict) or v.get(1) not in (1, 2, 3, 4, 5) or v.get(2) not in (CASE_AUTH, GROUP_AUTH):
+                raise ValueError("bad ACL entry")
+            subjects = list(v.get(3) or [])
+            targets = [dict(cluster=t.get(0), endpoint=t.get(1), device=t.get(2)) for t in (v.get(4) or [])]
+            if len(subjects) > 4 or len(targets) > 3:
+                raise ValueError("too many subjects or targets")
+            return dict(fabric=c.fabric, privilege=v[1], auth=v[2], subjects=subjects or None,
+                        targets=targets or None)
+
+        def acl_set(c, value, append):
+            if append:
+                if len([a for a in self.acl if a["fabric"] == c.fabric]) >= 4:
+                    return ST_RESOURCE_EXHAUSTED
+                self.acl.append(acl_entry(c, value))
+            else:
+                entries = [acl_entry(c, v) for v in value]
+                if len(entries) > 4:
+                    return ST_RESOURCE_EXHAUSTED
+                self.acl = [a for a in self.acl if a["fabric"] != c.fabric] + entries
+            if self.fabrics.get(c.fabric, {}).get("committed"):
+                self._save()
+            return ST_OK
+
+        acl.attr(0, acl_get, acl_set, write=PRIV_ADMIN, read=PRIV_ADMIN, fabric=True, sensitive=True)
+        acl.attr(2, lambda c: 4)
+        acl.attr(3, lambda c: 3)
+        acl.attr(4, lambda c: 4)
+
+        # Basic Information
+        version_int, version_str = self.info.get("version_int", 1), self.info.get("version", "1.0")
+
+        def set_label(c, v, append):
+            if not isinstance(v, str) or len(v) > 32:
+                return ST_CONSTRAINT_ERROR
+            self.node_label = v
+            self._save()
+
+        def set_location(c, v, append):
+            if not isinstance(v, str) or len(v) != 2:
+                return ST_CONSTRAINT_ERROR
+            self.location = v
+            self._save()
+
+        for aid, fn in ((0, lambda c: MATTER_DM_REVISION), (1, lambda c: self.info.get("vendor", "Glowback")),
+                        (2, lambda c: self.vid), (3, lambda c: self.info.get("product", "Glowback")),
+                        (4, lambda c: self.pid), (7, lambda c: 1), (8, lambda c: "1"),
+                        (9, lambda c: version_int), (10, lambda c: version_str),
+                        (13, lambda c: self.info.get("url", "")), (14, lambda c: self.info.get("label", "Glowback")),
+                        (15, lambda c: self.setup["serial"]), (18, lambda c: self.setup["unique"]),
+                        (19, lambda c: {0: 3, 1: 3}), (21, lambda c: MATTER_SPEC_VERSION), (22, lambda c: 1)):
+            basic.attr(aid, fn)
+        basic.attr(5, lambda c: self.node_label, set_label, write=PRIV_MANAGE)
+        basic.attr(6, lambda c: self.location, set_location, write=PRIV_ADMIN)
+
+        # General Commissioning
+        def set_breadcrumb(c, v, append):
+            self.breadcrumb = int(v)
+
+        gcom.attr(0, lambda c: self.breadcrumb, set_breadcrumb, write=PRIV_ADMIN)
+        gcom.attr(1, lambda c: {0: 60, 1: 900})
+        gcom.attr(2, lambda c: self.regulatory)
+        gcom.attr(3, lambda c: 2)
+        gcom.attr(4, lambda c: True)
+
+        def arm(c, f):
+            secs = f.get(0, 0)
+            fs = self.failsafe
+            if fs and fs["fabric"] != c.fabric:
+                return 0x01, {0: 4, 1: ""}  # busy with another admin
+            if secs == 0:
+                if fs:
+                    self._expire_failsafe()
+                return 0x01, {0: 0, 1: ""}
+            if not fs:
+                self.failsafe = fs = dict(fabric=c.fabric, start=time.monotonic(), session=c.session.local_id)
+            fs["until"] = min(time.monotonic() + secs, fs["start"] + 900)
+            self.breadcrumb = f.get(1, 0)
+            return 0x01, {0: 0, 1: ""}
+
+        def regulatory(c, f):
+            if f.get(0) not in (0, 1, 2):
+                return 0x03, {0: 1, 1: ""}
+            self.regulatory = f[0]
+            self.breadcrumb = f.get(2, self.breadcrumb)
+            return 0x03, {0: 0, 1: ""}
+
+        def complete(c, f):
+            fs = self.failsafe
+            if not fs:
+                return 0x05, {0: 3, 1: ""}
+            if c.pase or c.fabric != fs.get("new_fabric", fs["fabric"]):
+                return 0x05, {0: 2, 1: ""}
+            fab = self.fabrics.get(c.fabric)
+            if fab:
+                fab["committed"] = True
+            self.failsafe = None
+            self.breadcrumb = 0
+            self.window = None
+            self._advertise()
+            self._save()
+            for s in [s for s in self.sessions.values() if s.kind == "pase"]:
+                c.after.append(lambda sid=s.local_id: self._close_session(sid))
+            self.log(f"Matter: paired with a controller ({len(self.committed())} in all)")
+            return 0x05, {0: 0, 1: ""}
+
+        gcom.cmd(0, arm, PRIV_ADMIN, resp=0x01)
+        gcom.cmd(2, regulatory, PRIV_ADMIN, resp=0x03)
+        gcom.cmd(4, complete, PRIV_ADMIN, resp=0x05)
+
+        # Network Commissioning (Ethernet: nothing to configure)
+        net.attr(0, lambda c: 1)
+        net.attr(1, lambda c: [{0: b"eth", 1: True}])
+        net.attr(4, lambda c: True, lambda c, v, a: ST_OK, write=PRIV_ADMIN)
+        net.attr(5, lambda c: None)
+        net.attr(6, lambda c: None)
+        net.attr(7, lambda c: None)
+
+        # General Diagnostics
+        def interfaces(c):
+            v4, v6 = local_addresses()
+            return [{0: "Ethernet", 1: True, 2: None, 3: None, 4: bytes.fromhex(self.setup["host"]),
+                     5: [socket.inet_aton(a) for a in v4[:4]],
+                     6: [socket.inet_pton(socket.AF_INET6, a.split("%")[0]) for a, _ in v6[:8]], 7: 2}]
+
+        diag.attr(0, interfaces)
+        diag.attr(1, lambda c: self.reboots & 0xFFFF)
+        diag.attr(2, lambda c: int(time.monotonic() - self.started))
+        diag.attr(8, lambda c: False)
+        diag.cmd(0, lambda c, f: ST_CONSTRAINT_ERROR, PRIV_MANAGE)
+        diag.cmd(1, lambda c, f: (0x02, {0: int((time.monotonic() - self.started) * 1000),
+                                         1: int(time.time() * 1000)}), PRIV_OPERATE, resp=0x02)
+
+        # Administrator Commissioning
+        admin.attr(0, lambda c: 0 if not self.window else (1 if self.window["kind"] == "enhanced" else 2))
+        admin.attr(1, lambda c: self.window["admin_fabric"] if self.window else None)
+        admin.attr(2, lambda c: self.window["admin_vendor"] if self.window else None)
+
+        def open_ecw(c, f):
+            if self.window or self.failsafe:
+                return ST_FAILURE, 2  # busy
+            timeout, verifier, disc, iters, salt = f.get(0), f.get(1), f.get(2), f.get(3), f.get(4)
+            if not (180 <= (timeout or 0) <= 900) or not isinstance(verifier, bytes) or len(verifier) != 97 or \
+                    not (0 <= (disc if disc is not None else -1) <= 4095) or not (1000 <= (iters or 0) <= 100000) or \
+                    not isinstance(salt, bytes) or not 16 <= len(salt) <= 32:
+                return ST_FAILURE, 3  # PAKE parameter error
+            try:
+                ec_decode(verifier[32:])
+            except ValueError:
+                return ST_FAILURE, 3
+            fab = self.fabrics.get(c.fabric, {})
+            self.window = dict(kind="enhanced", until=time.monotonic() + timeout,
+                               w0=int.from_bytes(verifier[:32], "big"), L=verifier[32:], salt=salt, iterations=iters,
+                               discriminator=disc, admin_fabric=c.fabric, admin_vendor=fab.get("vendor"),
+                               instance=os.urandom(8).hex().upper())
+            self.pase_failures = 0
+            self.log("Matter: another app is being added")
+            self._advertise()
+            self._changed(0, 0x003C)
+
+        def revoke(c, f):
+            if not self.window:
+                return ST_FAILURE, 4  # window not open
+            self.close_window()
+            if self.failsafe:
+                self._expire_failsafe()
+
+        admin.cmd(0, open_ecw, PRIV_ADMIN, timed=True)
+        admin.cmd(2, revoke, PRIV_ADMIN, timed=True)
+
+        # Operational Credentials
+        def nocs(c):
+            return [{1: f["noc"], 2: f["icac"], 0xFE: f["index"]} for f in self.fabrics.values()]
+
+        def fabrics_attr(c):
+            return [{1: f["root_pub"], 2: f["vendor"], 3: f["fabric_id"], 4: f["node_id"], 5: f["label"],
+                     0xFE: f["index"]} for f in self.fabrics.values()]
+
+        opc.attr(0, nocs, read=PRIV_ADMIN, fabric=True, sensitive=True)
+        opc.attr(1, fabrics_attr, fabric=True)
+        opc.attr(2, lambda c: MATTER_MAX_FABRICS)
+        opc.attr(3, lambda c: len(self.committed()))
+        opc.attr(4, lambda c: [f["rcac"] for f in self.fabrics.values()] +
+                 ([self.failsafe["root"]] if self.failsafe and self.failsafe.get("root") else []))
+        opc.attr(5, lambda c: c.fabric)
+
+        def attestation(c, f):
+            nonce = f.get(0)
+            if not isinstance(nonce, bytes) or len(nonce) != 32:
+                return ST_INVALID_COMMAND
+            elements = tlv_encode({1: self.cd, 2: nonce, 3: 0})
+            return 0x01, {0: elements, 1: ecdsa_sign(self.dac_key, elements + c.session.challenge)}
+
+        def chain(c, f):
+            kind = f.get(0)
+            if kind not in (1, 2):
+                return ST_INVALID_COMMAND
+            return 0x03, {0: self.dac if kind == 1 else self.pai}
+
+        def csr(c, f):
+            nonce = f.get(0)
+            if not isinstance(nonce, bytes) or len(nonce) != 32:
+                return ST_INVALID_COMMAND
+            fs = self.failsafe
+            if not fs:
+                return ST_FAILSAFE_REQUIRED
+            d, Q = ec_keypair()
+            fs["key"], fs["pub"], fs["update"] = d, ec_encode(Q), bool(f.get(1, False))
+            elements = tlv_encode({1: matter_csr(d, Q), 2: nonce})
+            return 0x05, {0: elements, 1: ecdsa_sign(self.dac_key, elements + c.session.challenge)}
+
+        def add_root(c, f):
+            fs = self.failsafe
+            if not fs:
+                return ST_FAILSAFE_REQUIRED
+            try:
+                root = cert_parse(f[0])
+                if not cert_signed_by(root, root[9]):
+                    return ST_INVALID_COMMAND
+            except Exception:
+                return ST_INVALID_COMMAND
+            fs["root"] = f[0]
+            self._changed(0, 0x003E, 4)
+
+        def noc_response(code, index=None):
+            r = {0: code}
+            if index is not None:
+                r[1] = index
+            return 0x08, r
+
+        def add_noc(c, f):
+            fs = self.failsafe
+            if not fs:
+                return ST_FAILSAFE_REQUIRED
+            if "key" not in fs or fs.get("update"):
+                return noc_response(4)  # missing CSR
+            if not fs.get("root"):
+                return noc_response(3)
+            if fs.get("new_fabric"):
+                return ST_CONSTRAINT_ERROR
+            if len(self.fabrics) >= MATTER_MAX_FABRICS:
+                return noc_response(5)
+            noc, icac, epoch = f.get(0), f.get(1), f.get(2)
+            try:
+                fabric_id, node_id, _ = cert_verify_chain(noc, icac, fs["root"])
+            except Exception:
+                return noc_response(3)
+            if cert_parse(noc)[9] != fs["pub"]:
+                return noc_response(1)
+            if not isinstance(epoch, bytes) or len(epoch) != 16:
+                return ST_INVALID_COMMAND
+            root_pub = cert_parse(fs["root"])[9]
+            if any(x["root_pub"] == root_pub and x["fabric_id"] == fabric_id for x in self.fabrics.values()):
+                return noc_response(9)
+            index = 1
+            while index in self.fabrics:
+                index += 1
+            fab = dict(index=index, rcac=fs["root"], icac=icac, noc=noc, epoch=epoch, vendor=f.get(4, 0), label="",
+                       key=fs["key"], committed=False)
+            self._fabric_ids(fab)
+            self.fabrics[index] = fab
+            self.acl.append(dict(fabric=index, privilege=PRIV_ADMIN, auth=CASE_AUTH, subjects=[f.get(3)], targets=None))
+            fs["new_fabric"] = index
+            fs["fabric"] = index  # CommissioningComplete comes over CASE on the new fabric
+            if c.pase:
+                c.session.fabric = index  # the commissioning session now belongs to the new fabric
+            del fs["key"]
+            self._advertise()
+            for cid in (0x003E, 0x001F):
+                self._changed(0, cid)
+            return noc_response(0, index)
+
+        def update_noc(c, f):
+            fs = self.failsafe
+            if not fs or c.pase:
+                return ST_FAILSAFE_REQUIRED
+            fab = self.fabrics.get(c.fabric)
+            if not fab or "key" not in fs or not fs.get("update"):
+                return noc_response(4)
+            try:
+                fabric_id, node_id, _ = cert_verify_chain(f[0], f.get(1), fab["rcac"])
+            except Exception:
+                return noc_response(3)
+            if cert_parse(f[0])[9] != fs["pub"]:
+                return noc_response(1)
+            fab.update(noc=f[0], icac=f.get(1), key=fs["key"])
+            self._fabric_ids(fab)
+            self._advertise()
+            self._save()
+            return noc_response(0, fab["index"])
+
+        def label(c, f):
+            text = f.get(0)
+            fab = self.fabrics.get(c.fabric)
+            if not isinstance(text, str) or len(text) > 32 or not fab:
+                return ST_INVALID_COMMAND
+            if any(x["label"] == text and x["index"] != fab["index"] and text for x in self.fabrics.values()):
+                return noc_response(10)
+            fab["label"] = text
+            self._save()
+            return noc_response(0, fab["index"])
+
+        def remove(c, f):
+            index = f.get(0)
+            if index not in self.fabrics:
+                return noc_response(11)
+            c.after.append(lambda: self._drop_fabric(index))
+            return noc_response(0, index)
+
+        opc.cmd(0, attestation, PRIV_ADMIN, resp=0x01)
+        opc.cmd(2, chain, PRIV_ADMIN, resp=0x03)
+        opc.cmd(4, csr, PRIV_ADMIN, resp=0x05)
+        opc.cmd(6, add_noc, PRIV_ADMIN, resp=0x08)
+        opc.cmd(7, update_noc, PRIV_ADMIN, resp=0x08)
+        opc.cmd(9, label, PRIV_ADMIN, resp=0x08)
+        opc.cmd(10, remove, PRIV_ADMIN, resp=0x08)
+        opc.cmd(11, add_root, PRIV_ADMIN)
+
+        # Group Key Management: the IPK only
+        gkm.attr(0, lambda c: [], lambda c, v, a: ST_OK, write=PRIV_MANAGE, fabric=True)
+        gkm.attr(1, lambda c: [], fabric=True)
+        gkm.attr(2, lambda c: 1)
+        gkm.attr(3, lambda c: 1)
+        gkm.cmd(0, lambda c, f: ST_RESOURCE_EXHAUSTED, PRIV_ADMIN)
+        gkm.cmd(1, lambda c, f: ST_NOT_FOUND, PRIV_ADMIN, resp=0x02)
+        gkm.cmd(3, lambda c, f: ST_NOT_FOUND if f.get(0) else ST_INVALID_COMMAND, PRIV_ADMIN)
+        gkm.cmd(4, lambda c, f: (0x05, {0: [0]}), PRIV_ADMIN, resp=0x05)
+
+        # Identify
+        def set_identify(c, v, append):
+            self.identify(int(v))
+
+        ident.attr(0, lambda c: max(0, int(self.identify_until - time.monotonic() + 0.999)) if self.identify_until
+                   else 0, set_identify, write=PRIV_MANAGE)
+        ident.attr(1, lambda c: 1)  # light output
+        ident.cmd(0, lambda c, f: self.identify(int(f.get(0, 0))), PRIV_MANAGE)
+        ident.cmd(0x40, lambda c, f: self.identify(0 if f.get(0) in (0xFE, 0xFF) else 2), PRIV_MANAGE)
+
+        # Groups: a table without group messages (not supported over this transport)
+        def gtable(c):
+            return self.groups.setdefault(c.fabric, {})
+
+        def add_group(c, f):
+            g = f.get(0, 0)
+            if not 1 <= g <= 0xFFFF:
+                return 0x00, {0: ST_CONSTRAINT_ERROR, 1: g}
+            gtable(c)[g] = f.get(1, "")
+            return 0x00, {0: ST_OK, 1: g}
+
+        groups.attr(0, lambda c: 0)
+        groups.cmd(0, add_group, PRIV_MANAGE, resp=0x00)
+        groups.cmd(1, lambda c, f: (0x01, {0: ST_OK if f.get(0) in gtable(c) else ST_NOT_FOUND, 1: f.get(0, 0),
+                                           2: gtable(c).get(f.get(0), "")}), PRIV_OPERATE, resp=0x01)
+        groups.cmd(2, lambda c, f: (0x02, {0: None, 1: [g for g in gtable(c) if not f.get(0) or g in f.get(0)]}),
+                   PRIV_OPERATE, resp=0x02)
+        groups.cmd(3, lambda c, f: (0x03, {0: ST_OK if gtable(c).pop(f.get(0), None) is not None else ST_NOT_FOUND,
+                                           1: f.get(0, 0)}), PRIV_MANAGE, resp=0x03)
+        def add_if_identifying(c, f):
+            if self.identify_until:
+                add_group(c, f)
+
+        groups.cmd(4, lambda c, f: gtable(c).clear(), PRIV_MANAGE)
+        groups.cmd(5, add_if_identifying, PRIV_MANAGE)
+
+        # On/Off
+        onoff.attr(0, lambda c: bool(st()["on"]))
+        onoff.attr(0x4000, lambda c: True)
+        onoff.attr(0x4001, lambda c: 0, lambda c, v, a: ST_OK)
+        onoff.attr(0x4002, lambda c: 0, lambda c, v, a: ST_OK)
+        onoff.attr(0x4003, lambda c: None, lambda c, v, a: ST_OK)
+        onoff.cmd(0, lambda c, f: apply(on=False))
+        onoff.cmd(1, lambda c, f: apply(on=True))
+        onoff.cmd(2, lambda c, f: apply(on=not st()["on"]))
+        onoff.cmd(0x40, lambda c, f: apply(on=False))
+        onoff.cmd(0x41, lambda c, f: apply(on=True))
+        onoff.cmd(0x42, lambda c, f: apply(on=True))
+
+        # Level Control (1..254)
+        def to_level(c, f, with_onoff):
+            lv = max(1, min(254, int(f[0])))
+            if with_onoff:
+                apply(level=lv, on=lv > 1)
+            else:
+                apply(level=lv)
+
+        def step(c, f, with_onoff):
+            cur = st()["level"]
+            lv = max(1, min(254, cur + (int(f.get(1, 0)) if f.get(0, 0) == 0 else -int(f.get(1, 0)))))
+            apply(level=lv, **({"on": lv > 1} if with_onoff else {}))
+
+        def move(c, f, with_onoff):
+            lv = 254 if f.get(0, 0) == 0 else 1
+            apply(level=lv, **({"on": lv > 1} if with_onoff else {}))
+
+        level.attr(0, lambda c: st()["level"])
+        level.attr(1, lambda c: 0)
+        level.attr(2, lambda c: 1)
+        level.attr(3, lambda c: 254)
+        level.attr(0x0F, lambda c: 0, lambda c, v, a: ST_OK)
+        level.attr(0x11, lambda c: None, lambda c, v, a: ST_OK)
+        level.attr(0x4000, lambda c: None, lambda c, v, a: ST_OK)
+        level.cmd(0, lambda c, f: to_level(c, f, False))
+        level.cmd(1, lambda c, f: move(c, f, False))
+        level.cmd(2, lambda c, f: step(c, f, False))
+        level.cmd(3, lambda c, f: None)
+        level.cmd(4, lambda c, f: to_level(c, f, True))
+        level.cmd(5, lambda c, f: move(c, f, True))
+        level.cmd(6, lambda c, f: step(c, f, True))
+        level.cmd(7, lambda c, f: None)
+
+        # Color Control: hue/saturation, CIE xy, color temperature
+        color.attr(0, lambda c: st()["hue"])
+        color.attr(1, lambda c: st()["sat"])
+        color.attr(2, lambda c: 0)
+        color.attr(3, lambda c: st()["x"])
+        color.attr(4, lambda c: st()["y"])
+        color.attr(7, lambda c: st()["ct"])
+        color.attr(8, lambda c: st()["mode"])
+        color.attr(0x0F, lambda c: 0, lambda c, v, a: ST_OK)
+        color.attr(0x10, lambda c: 0)
+        color.attr(0x4001, lambda c: st()["mode"])
+        color.attr(0x400A, lambda c: 0x19)
+        color.attr(0x400B, lambda c: 153)
+        color.attr(0x400C, lambda c: 500)
+        color.attr(0x400D, lambda c: 153)
+        color.attr(0x4010, lambda c: None, lambda c, v, a: ST_OK)
+
+        def hs(h=None, s=None):
+            cur = st()
+            apply(hue=cur["hue"] if h is None else int(h) % 255, sat=cur["sat"] if s is None else min(254, int(s)),
+                  mode=0)
+
+        def step_hue(f):
+            cur = st()["hue"]
+            hs(h=(cur + (int(f.get(1, 0)) if f.get(0) == 1 else -int(f.get(1, 0)))) % 255)
+
+        def step_sat(f):
+            cur = st()["sat"]
+            hs(s=max(0, min(254, cur + (int(f.get(1, 0)) if f.get(0) == 1 else -int(f.get(1, 0))))))
+
+        def xy(x, y):
+            apply(x=max(0, min(65279, int(x))), y=max(0, min(65279, int(y))), mode=1)
+
+        def ct(m):
+            apply(ct=max(153, min(500, int(m))), mode=2)
+
+        color.cmd(0x00, lambda c, f: hs(h=f[0]))
+        color.cmd(0x01, lambda c, f: None)
+        color.cmd(0x02, lambda c, f: step_hue(f))
+        color.cmd(0x03, lambda c, f: hs(s=f[0]))
+        color.cmd(0x04, lambda c, f: None)
+        color.cmd(0x05, lambda c, f: step_sat(f))
+        color.cmd(0x06, lambda c, f: hs(h=f[0], s=f[1]))
+        color.cmd(0x07, lambda c, f: xy(f[0], f[1]))
+        color.cmd(0x08, lambda c, f: None)
+        color.cmd(0x09, lambda c, f: xy(st()["x"] + int(f.get(0, 0)), st()["y"] + int(f.get(1, 0))))
+        color.cmd(0x0A, lambda c, f: ct(f[0]))
+        color.cmd(0x47, lambda c, f: None)
+        color.cmd(0x4B, lambda c, f: None)
+        color.cmd(0x4C, lambda c, f: ct(st()["ct"] + (int(f.get(1, 0)) if f.get(0) == 1 else -int(f.get(1, 0)))))
+
+
+# ---- local addresses
+MATTER_ADDRESSES = None  # a function giving the addresses of the networks phones are on (virtual adapters left out)
+
+
+def local_addresses():
+    """([IPv4], [(IPv6 with %scope, interface index)]) of this computer, loopback excluded."""
+    if MATTER_ADDRESSES:
+        try:
+            return MATTER_ADDRESSES()
+        except OSError:
+            pass
+    v4, v6 = [], []
+    try:
+        infos = socket.getaddrinfo(socket.gethostname(), None)
+    except OSError:
+        infos = []
+    for fam, _, _, _, sa in infos:
+        if fam == socket.AF_INET and not sa[0].startswith("127.") and sa[0] not in v4:
+            v4.append(sa[0])
+        elif fam == socket.AF_INET6 and sa[0] != "::1":
+            entry = (sa[0] if "%" in sa[0] or not sa[3] else f"{sa[0]}%{sa[3]}", sa[3])
+            if entry not in v6:
+                v6.append(entry)
+    if sys.platform.startswith("linux"):
+        try:
+            for line in open("/proc/net/if_inet6"):
+                hexaddr, idx, _, scope, _, name = line.split()
+                if name == "lo":
+                    continue
+                addr = socket.inet_ntop(socket.AF_INET6, bytes.fromhex(hexaddr))
+                entry = (f"{addr}%{int(idx, 16)}" if int(scope, 16) == 0x20 else addr, int(idx, 16))
+                if entry not in v6:
+                    v6.append(entry)
+        except OSError:
+            pass
+    if not v4:
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.connect(("192.0.2.1", 9))
+            v4.append(s.getsockname()[0])
+            s.close()
+        except OSError:
+            pass
+    return v4, v6
+
+
+# ---- DNS-SD over mDNS (RFC 6762/6763): just enough to be found and resolved
+class Mdns:
+    GROUP4, GROUP6 = "224.0.0.251", "ff02::fb"
+
+    def __init__(self, host, log, debug=lambda m: None):
+        self.host, self.log, self.debug = f"{host}.local", log, debug
+        self.records, self.services, self.port = [], [], 0
+        self.announce_at = []
+        self.s4 = self.s6 = None
+        self.ifaces6 = []
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            if hasattr(socket, "SO_REUSEPORT"):
+                try:
+                    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
+                except OSError:
+                    pass
+            s.bind(("", 5353))
+            s.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 255)
+            v4, _ = local_addresses()
+            joined = False
+            for a in v4:
+                try:
+                    s.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP,
+                                 socket.inet_aton(self.GROUP4) + socket.inet_aton(a))
+                    joined = True
+                except OSError:
+                    pass
+            if not joined:
+                s.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP,
+                             socket.inet_aton(self.GROUP4) + socket.inet_aton("0.0.0.0"))
+            self.s4 = s
+        except OSError as e:
+            log(f"Matter: mDNS (IPv4) unavailable ({e})")
+        try:
+            s = socket.socket(socket.AF_INET6, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            if hasattr(socket, "SO_REUSEPORT"):
+                try:
+                    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
+                except OSError:
+                    pass
+            try:
+                s.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
+            except (AttributeError, OSError):
+                pass
+            s.bind(("::", 5353))
+            s.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_MULTICAST_HOPS, 255)
+            _, v6 = local_addresses()
+            for idx in sorted({i for _, i in v6 if i}):
+                try:
+                    s.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_JOIN_GROUP,
+                                 socket.inet_pton(socket.AF_INET6, self.GROUP6) + struct.pack("@I", idx))
+                    self.ifaces6.append(idx)
+                except OSError:
+                    pass
+            self.s6 = s
+        except OSError as e:
+            log(f"Matter: mDNS (IPv6) unavailable ({e})")
+        v4, v6 = local_addresses()
+        debug(f"Matter   mDNS: IPv4 {'on' if self.s4 else 'off'} {v4}, IPv6 {'on' if self.s6 else 'off'} interfaces "
+              f"{self.ifaces6} {[a for a, _ in v6]}")
+
+    def sockets(self):
+        return [s for s in (self.s4, self.s6) if s]
+
+    def close(self):
+        if self.records:
+            self._send_all(self._packet([(r[0], r[1], 0, r[3], r[4]) for r in self.records], []))
+        for s in self.sockets():
+            s.close()
+
+    def publish(self, services, port):
+        """services: [(type, instance, subtypes, txt dict)]."""
+        old = {(r[0], r[1], r[4]) for r in self.records}
+        self.services, self.port = services, port
+        recs = []
+        v4, v6 = local_addresses()
+        for typ, inst, subs, txt in services:
+            full = f"{inst}.{typ}.local"
+            recs.append(("_services._dns-sd._udp.local", 12, 4500, False, _dns_name(f"{typ}.local")))
+            recs.append((f"{typ}.local", 12, 4500, False, _dns_name(full)))
+            for sub in subs:
+                recs.append((f"{sub}._sub.{typ}.local", 12, 4500, False, _dns_name(full)))
+            recs.append((full, 33, 120, True, struct.pack(">HHH", 0, 0, port) + _dns_name(self.host)))
+            recs.append((full, 16, 4500, True, b"".join(bytes([len(e)]) + e for e in
+                                                         (f"{k}={v}".encode() for k, v in txt.items()))))
+        for a in v4:
+            recs.append((self.host, 1, 120, True, socket.inet_aton(a)))
+        for a, _ in v6:
+            recs.append((self.host, 28, 120, True, socket.inet_pton(socket.AF_INET6, a.split("%")[0])))
+        gone = [r for r in self.records if (r[0], r[1], r[4]) not in {(x[0], x[1], x[4]) for x in recs}]
+        if gone:
+            self._send_all(self._packet([(r[0], r[1], 0, r[3], r[4]) for r in gone], []))
+        self.records = recs
+        if {(r[0], r[1], r[4]) for r in recs} != old:
+            now = time.monotonic()
+            self.announce_at = [now, now + 1, now + 3]
+
+    def tick(self):
+        now = time.monotonic()
+        if self.announce_at and now >= self.announce_at[0]:
+            self.announce_at.pop(0)
+            if self.records:
+                answers = [r for r in self.records if r[1] in (12, 33, 16)]
+                extra = [r for r in self.records if r[1] in (1, 28)]
+                self._send_all(self._packet(answers, extra))
+
+    def received(self, sock, data, addr):
+        if len(data) < 12:
+            return
+        qid, flags, qd = struct.unpack(">HHH", data[:6])
+        if flags & 0x8000:
+            return  # a response, not a question
+        pos, questions = 12, []
+        for _ in range(qd):
+            name, pos = _dns_read_name(data, pos)
+            qtype, qclass = struct.unpack(">HH", data[pos:pos + 4])
+            pos += 4
+            questions.append((name.lower(), qtype, bool(qclass & 0x8000)))
+        answers, unicast = [], False
+        for name, qtype, qu in questions:
+            for r in self.records:
+                if r[0].lower() == name and (qtype in (r[1], 255)) and r not in answers:
+                    answers.append(r)
+                    unicast |= qu
+        if any("matter" in q[0] or q[0] == self.host.lower() for q in questions):
+            self.debug(f"Matter   mDNS from {addr[0]}: {[(q[0], q[1]) for q in questions]} -> {len(answers)} answers")
+        if not answers:
+            return
+        extra = []
+        for r in answers:
+            if r[1] == 12:
+                target = _dns_plain(r[4])
+                extra += [x for x in self.records if x[0].lower() == target.lower() and x[1] in (33, 16)]
+        for r in answers + extra:
+            if r[1] == 33:
+                extra += [x for x in self.records if x[0] == self.host and x[1] in (1, 28)]
+        extra = [x for i, x in enumerate(extra) if x not in answers and x not in extra[:i]]
+        legacy = addr[1] != 5353
+        pkt = self._packet(answers, extra, qid if legacy else 0, questions if legacy else None)
+        if legacy or unicast:
+            try:
+                sock.sendto(pkt, addr)
+            except OSError:
+                pass
+        else:
+            self._send_all(pkt)
+
+    @staticmethod
+    def _packet(answers, extra, qid=0, questions=None):
+        out = struct.pack(">HHHHHH", qid, 0x8400, len(questions) if questions else 0, len(answers), 0, len(extra))
+        for name, qtype, _ in questions or []:
+            out += _dns_name(name) + struct.pack(">HH", qtype, 1)
+        for name, rtype, ttl, unique, rdata in answers + extra:
+            out += _dns_name(name) + struct.pack(">HHIH", rtype, 0x8001 if unique else 1, ttl, len(rdata)) + rdata
+        return out
+
+    def _send_all(self, pkt):
+        if self.s4:
+            for a in local_addresses()[0] or [None]:
+                try:
+                    if a:
+                        self.s4.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_IF, socket.inet_aton(a))
+                    self.s4.sendto(pkt, (self.GROUP4, 5353))
+                except OSError:
+                    pass
+        if self.s6:
+            for idx in self.ifaces6 or [0]:
+                try:
+                    self.s6.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_MULTICAST_IF, idx)
+                    self.s6.sendto(pkt, (self.GROUP6, 5353, 0, idx))
+                except OSError:
+                    pass
+
+
+def _dns_name(dotted):
+    out = b""
+    for label in dotted.rstrip(".").split("."):
+        b = label.encode()
+        out += bytes([len(b)]) + b
+    return out + b"\x00"
+
+
+def _dns_plain(encoded):
+    return _dns_read_name(encoded, 0)[0]
+
+
+def _dns_read_name(data, pos):
+    labels, jumped, end = [], False, pos
+    for _ in range(64):
+        n = data[pos]
+        if n == 0:
+            pos += 1
+            break
+        if n & 0xC0 == 0xC0:
+            ptr = ((n & 0x3F) << 8) | data[pos + 1]
+            if not jumped:
+                end = pos + 2
+            jumped = True
+            pos = ptr
+            continue
+        labels.append(data[pos + 1:pos + 1 + n].decode("utf-8", "replace"))
+        pos += 1 + n
+    return ".".join(labels), (end if jumped else pos)
+
+
+class SOCKET_ADDRESS(ctypes.Structure):
+    _fields_ = [("lpSockaddr", ctypes.c_void_p), ("iSockaddrLength", ctypes.c_int)]
+
+
+class IP_ADAPTER_UNICAST_ADDRESS(ctypes.Structure):
+    pass
+
+
+IP_ADAPTER_UNICAST_ADDRESS._fields_ = [("Length", wt.ULONG), ("Flags", wt.DWORD),
+                                       ("Next", ctypes.POINTER(IP_ADAPTER_UNICAST_ADDRESS)),
+                                       ("Address", SOCKET_ADDRESS)]
+
+
+class IP_ADAPTER_ADDRESSES(ctypes.Structure):
+    pass
+
+
+IP_ADAPTER_ADDRESSES._fields_ = [
+    ("Length", wt.ULONG), ("IfIndex", wt.DWORD), ("Next", ctypes.POINTER(IP_ADAPTER_ADDRESSES)),
+    ("AdapterName", ctypes.c_char_p), ("FirstUnicastAddress", ctypes.POINTER(IP_ADAPTER_UNICAST_ADDRESS)),
+    ("FirstAnycastAddress", ctypes.c_void_p), ("FirstMulticastAddress", ctypes.c_void_p),
+    ("FirstDnsServerAddress", ctypes.c_void_p), ("DnsSuffix", wt.LPWSTR), ("Description", wt.LPWSTR),
+    ("FriendlyName", wt.LPWSTR), ("PhysicalAddress", ctypes.c_ubyte * 8), ("PhysicalAddressLength", wt.ULONG),
+    ("Flags", wt.ULONG), ("Mtu", wt.ULONG), ("IfType", wt.DWORD), ("OperStatus", ctypes.c_int),
+    ("Ipv6IfIndex", wt.DWORD), ("ZoneIndices", wt.DWORD * 16), ("FirstPrefix", ctypes.c_void_p),
+    ("TransmitLinkSpeed", ctypes.c_uint64), ("ReceiveLinkSpeed", ctypes.c_uint64),
+    ("FirstWinsServerAddress", ctypes.c_void_p), ("FirstGatewayAddress", ctypes.c_void_p)]
+
+
+def lan_addresses():
+    """The addresses of the adapters that lead to the home network (up, with a gateway, not Hyper-V, WSL, Docker or
+    VPN virtual adapters): what phones on the network can reach. ([IPv4], [(IPv6%scope, index)])."""
+    iphlpapi = ctypes.WinDLL("iphlpapi")
+    size = wt.ULONG(16384)
+    for _ in range(3):
+        buf = ctypes.create_string_buffer(size.value)
+        err = iphlpapi.GetAdaptersAddresses(0, 0x0080 | 0x0002 | 0x0004, None, buf, byref(size))  # GATEWAYS, no
+        if err != 111:  # ERROR_BUFFER_OVERFLOW                                                      # anycast/multicast
+            break
+    if err:
+        raise OSError(f"GetAdaptersAddresses error {err}")
+    v4, v6 = [], []
+    a = ctypes.cast(buf, ctypes.POINTER(IP_ADAPTER_ADDRESSES))
+    while a:
+        ad = a.contents
+        virtual = any(w in (ad.Description or "") for w in ("Hyper-V", "Virtual", "VMware", "VirtualBox", "TAP-",
+                                                            "WireGuard", "Tailscale", "ZeroTier"))
+        if ad.OperStatus == 1 and ad.IfType in (6, 71) and ad.FirstGatewayAddress and not virtual:
+            u = ad.FirstUnicastAddress
+            while u:
+                sa = ctypes.string_at(u.contents.Address.lpSockaddr, u.contents.Address.iSockaddrLength)
+                family = struct.unpack_from("<H", sa)[0]
+                if family == socket.AF_INET:
+                    v4.append(socket.inet_ntoa(sa[4:8]))
+                elif family == 23:  # AF_INET6
+                    addr, scope = socket.inet_ntop(socket.AF_INET6, sa[8:24]), struct.unpack_from("<I", sa, 24)[0]
+                    if addr.startswith("fe80"):
+                        v6.append((f"{addr}%{scope or ad.Ipv6IfIndex}", scope or ad.Ipv6IfIndex))
+                    else:
+                        v6.append((addr, ad.Ipv6IfIndex))
+                u = u.contents.Next
+        a = ad.Next
+    if not v4 and not v6:
+        raise OSError("no network adapter with a gateway")
+    return v4, v6
+
+
+MATTER_ADDRESSES = lan_addresses
+
+
+def matter_settings():
+    m = load_settings().get("matter")
+    return m if isinstance(m, dict) else {}
+
+
+class MatterStore:
+    """matter.json, next to settings.json; the fabrics' private keys are encrypted for this Windows user."""
+
+    def load(self):
+        try:
+            with open(MATTER_PATH, encoding="utf-8") as f:
+                return json.load(f)
+        except (OSError, ValueError):
+            return None
+
+    def save(self, data):
+        tmp = MATTER_PATH + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=1)
+        os.replace(tmp, MATTER_PATH)
+
+    @staticmethod
+    def protect(data):
+        return base64.b64encode(_dpapi(data, True)).decode()
+
+    @staticmethod
+    def unprotect(text):
+        return _dpapi(base64.b64decode(text), False)
+
+
+def _srgb_linear(c):
+    c /= 255.0
+    return c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4
+
+
+def _srgb_encode(c):
+    c = max(0.0, min(1.0, c))
+    return 12.92 * c if c <= 0.0031308 else 1.055 * c ** (1 / 2.4) - 0.055
+
+
+def rgb_xy(color):
+    """0xRRGGBB -> CIE 1931 (x, y)."""
+    r, g, b = (_srgb_linear(c) for c in rgb(color))
+    X, Y, Z = (0.4124 * r + 0.3576 * g + 0.1805 * b, 0.2126 * r + 0.7152 * g + 0.0722 * b,
+               0.0193 * r + 0.1192 * g + 0.9505 * b)
+    total = X + Y + Z
+    return (X / total, Y / total) if total else (0.3127, 0.3290)
+
+
+def xy_rgb(x, y):
+    """CIE 1931 (x, y) -> 0xRRGGBB, as bright as it gets."""
+    y = max(y, 1e-4)
+    X, Z = x / y, (1 - x - y) / y
+    lin = [max(0.0, v) for v in (3.2406 * X - 1.5372 - 0.4986 * Z, -0.9689 * X + 1.8758 + 0.0415 * Z,
+                                 0.0557 * X - 0.2040 + 1.0570 * Z)]
+    top = max(lin) or 1.0
+    r, g, b = (round(255 * _srgb_encode(v / top)) for v in lin)
+    return (r << 16) | (g << 8) | b
+
+
+def kelvin_rgb(kelvin):
+    """A white of that color temperature -> 0xRRGGBB (Tanner Helland's fit of the black body)."""
+    t = max(1000.0, min(40000.0, kelvin)) / 100
+    r = 255 if t <= 66 else 329.698727446 * (t - 60) ** -0.1332047592
+    g = 99.4708025861 * math.log(t) - 161.1195681661 if t <= 66 else 288.1221695283 * (t - 60) ** -0.0755148492
+    b = 255 if t >= 66 else 0 if t <= 19 else 138.5177312231 * math.log(t - 10) - 305.0447927307
+    r, g, b = (max(0, min(255, round(v))) for v in (r, g, b))
+    return (r << 16) | (g << 8) | b
+
+
+class MatterLight:
+    """Glowback's ambient light as Matter sees it: on/off, brightness, and a color (hue and saturation, CIE xy or a
+    white's temperature) that switches Glowback to its Color look."""
+
+    def __init__(self, state):
+        self.s = state
+        self.chosen = None  # (color, the Matter values it came from): reported as they were while the color stays
+
+    def state(self):
+        s = self.s
+        if self.chosen and self.chosen[0] == s.color:
+            fields = dict(self.chosen[1])
+        else:
+            h, sat, _ = color_hsv(s.color)
+            x, y = rgb_xy(s.color)
+            fields = dict(hue=round(h / 360 * 254) % 255, sat=round(sat * 254), x=min(65279, round(x * 65536)),
+                          y=min(65279, round(y * 65536)), ct=250, mode=0)
+        return dict(on=s.lit(), level=max(1, min(254, round(s.brightness * 254 / 100))), **fields)
+
+    def apply(self, **kw):
+        change = {}
+        if "on" in kw:  # off: the LEDs go dark (Glowback's pause would give them back to the device's own effect)
+            change["enabled"], change["dark"] = True, not kw["on"]
+        if "level" in kw:
+            change["brightness"] = float(max(1, min(100, round(kw["level"] * 100 / 254))))
+        if kw.keys() & {"hue", "sat", "x", "y", "ct"}:
+            cur = self.state()
+            f = {k: kw.get(k, cur[k]) for k in ("hue", "sat", "x", "y", "ct", "mode")}
+            if f["mode"] == 2:
+                color = kelvin_rgb(1e6 / max(1, f["ct"]))
+            elif f["mode"] == 1:
+                color = xy_rgb(f["x"] / 65536, f["y"] / 65536)
+            else:
+                color = hsv_color(f["hue"] / 254 * 360, f["sat"] / 254)
+            change["color"], change["mode"] = color, "color"  # a color chosen on the phone: the Color look
+            self.chosen = (color, f)
+        if change:
+            log("Matter: " + ", ".join(f"{k} {color_hex(v) if k == 'color' else v}" for k, v in change.items()))
+            self.s.update(**change)
+
+    def identify(self, seconds):
+        """"Identify" in the phone's app: the LEDs blink white."""
+        self.s.identify_until = time.monotonic() + seconds if seconds else 0.0
+
+
+def matter_start(state, notify=lambda: None):
+    """Glowback's Matter light, started; None (and a line in the log) if this PC cannot run it."""
+    nums = [int(n) for n in re.findall(r"\d+", __version__)[:3]] + [0, 0, 0]
+    info = dict(product="Glowback", vendor="Glowback", label="Glowback ambient light", url=REPO_URL,
+                version=__version__, version_int=nums[0] * 10000 + nums[1] * 100 + nums[2])
+    att = dict(dac=base64.b64decode(MATTER_DAC), dac_key=base64.b64decode(MATTER_DAC_KEY),
+               pai=base64.b64decode(MATTER_PAI), cd=base64.b64decode(MATTER_CD), vid=MATTER_VID, pid=MATTER_PID)
+    try:
+        node = MatterNode(MatterStore(), MatterLight(state), info, att, log=log, watch=lambda: state.version,
+                          notify=notify)
+        node.start()
+    except (OSError, ValueError) as e:
+        log(f"Matter: could not start ({e})")
+        return None
+    log("Matter: on")
+    return node
+
+
+def matter_guide_url():
+    if _lang["code"] == "fr":
+        return REPO_URL + "/blob/main/README.fr.md#-apple-maison-google-home-et-alexa"
+    return REPO_URL + "#-apple-home-google-home-and-alexa"
+
+
+def matter_app_name(fabric):
+    """Which app a fabric is (from its maker), else the name it gave itself."""
+    name = MATTER_VENDORS.get(fabric["vendor"])
+    if name and name.startswith("matter_"):
+        name = tr(name)
+    return name or fabric["label"] or tr("matter_controller")
+# (end of Matter)
 
 
 class HomeAssistantDialog:
@@ -6445,7 +9662,7 @@ class AppWindow:
     Pages: Ambient light (live preview, the look, brightness), Profiles (night, apps), Home Assistant, Settings,
     About."""
     PAGES = (("light", "light", "nav_light"), ("profiles", "layers", "nav_profiles"), ("home", "home", "nav_home"),
-             ("settings", "settings", "nav_settings"), ("about", "info", "nav_about"))
+             ("matter", "phone", "nav_matter"), ("settings", "settings", "nav_settings"), ("about", "info", "nav_about"))
     MODE_ICONS = {"zones": "monitor", "average": "palette", "color": "drop", "gradient": "gradient", "music": "music"}
     STYLE_ICONS = {"pulse": "pulse", "spectrum": "spectrum", "wave": "wave"}
     SLIDERS = ("brightness", "hue", "sat", "sens", "night_bright")
@@ -7063,7 +10280,7 @@ class AppWindow:
         self._card(y, h)
         self._preview(x0, y, x1 - x0, h)
         tx = x1 - p(24) - p(42)
-        self._toggle("enabled", tx, y + p(24), s.enabled)
+        self._toggle("enabled", tx, y + p(24), s.lit())
         label = tr("ambilight")
         lw = self.tw(label, self.fonts["body"])
         self.T(label, self.fonts["body"], MenuPainter.TEXT, tx - p(12) - lw, y + p(24), tx - p(12), y + p(46))
@@ -7457,6 +10674,108 @@ class AppWindow:
         self.W(text, self.fonts["body"], MenuPainter.TEXT, x0 + p(62), y + (h - th) / 2, bx - p(20), y + (h + th) / 2)
         return y + h
 
+    def _text_card(self, y, icon, text, button=None):
+        """A card of wrapped text with an icon, and maybe a button (wid, label, style) on the right."""
+        p, x0, x1 = self.px, self.cx0, self.cx1
+        bw = self.tw(button[1], self.fonts["button"]) + p(54) if button else 0
+        th = self.wrap_h(text, self.fonts["body"], x1 - x0 - p(62) - bw - p(40))
+        h = max(p(76), th + p(36))
+        self._card(y, h)
+        right = x1 - p(20)
+        if button:
+            right = self._button(button[0], right, y + (h - p(34)) / 2, button[1], button[2]) - p(20)
+        self.T(MenuPainter.ICONS[icon], self.fonts["icon"], MenuPainter.ICON, x0 + p(20), y, x0 + p(44), y + h, 0x1)
+        self.W(text, self.fonts["body"], MenuPainter.TEXT, x0 + p(62), y + (h - th) / 2, right, y + (h + th) / 2)
+        return y + h
+
+    def _page_matter(self, y):
+        p, x0, x1 = self.px, self.cx0, self.cx1
+        node, on = self.tray.matter, bool(matter_settings().get("on"))
+        info = node.pairing() if node else None
+        y = self._header(y, tr("matter_title"), tr("matter_sub"))
+        rh = p(68)
+        self._card(y, rh)
+        tx = x1 - p(20) - p(42)
+        self._toggle("matter:on", tx, y + (rh - p(22)) / 2, on, row=(x0, y, x1, y + rh))
+        if not on:
+            desc, color = tr("matter_off_desc"), None
+        elif not node:
+            desc, color = tr("matter_failed"), MenuPainter.AMBER
+        elif info["fabrics"]:
+            desc, color = tr("matter_on_count", n=len(info["fabrics"])), MenuPainter.GREEN
+        else:
+            desc, color = tr("matter_on_none"), MenuPainter.GREEN
+        self._row_text(y, rh, "phone", tr("matter_toggle"), desc, right=tx - p(16), desc_color=color)
+        y += rh + p(28)
+        if node:
+            y = self._label(y, tr("matter_pair"))
+            left = max(0, round((info["until"] - time.monotonic()) / 60 + 0.49)) if info["open"] else 0
+            if info["open"] and not info["enhanced"]:
+                y = self._matter_qr(y, info, left) + p(28)
+            elif info["open"]:  # another app (Apple Home's "Turn On Pairing Mode"...) adds one more
+                y = self._text_card(y, "phone", tr("matter_other_app", min=left),
+                                    ("matter:stop", tr("matter_stop"), "secondary")) + p(28)
+            else:
+                y = self._text_card(y, "qr", tr("matter_closed_desc"),
+                                    ("matter:pair", tr("matter_open"), "primary")) + p(28)
+            y = self._label(y, tr("matter_paired"))
+            fabrics = info["fabrics"]
+            if not fabrics:
+                y = self._text_card(y, "phone", tr("matter_none")) + p(28)
+            else:
+                self._card(y, rh * len(fabrics))
+                for i, f in enumerate(fabrics):
+                    ry = y + i * rh
+                    if i:
+                        self._sep(ry)
+                    bx = self._button(f"matter:remove:{f['index']}", x1 - p(20), ry + (rh - p(34)) / 2,
+                                      tr("matter_remove"), "quiet")
+                    name = matter_app_name(f)
+                    desc = f["label"] if f["label"] and f["label"] != name else tr("matter_paired_desc")  # its home
+                    self._row_text(ry, rh, "home", name, desc, right=bx - p(16))
+                y += rh * len(fabrics) + p(28)
+        y = self._label(y, tr("matter_good_to_know"))
+        return self._text_card(y, "info", tr("matter_notes"), ("link:matter", tr("ha_guide"), "secondary"))
+
+    def _matter_qr(self, y, info, minutes):
+        """The pairing card: the QR code to scan, the code to type, the time left."""
+        p, x0, x1 = self.px, self.cx0, self.cx1
+        cached = getattr(self, "_qr", None)
+        if not cached or cached[0] != info["qr"]:
+            cached = self._qr = (info["qr"], qr_matrix(info["qr"]))
+        m = cached[1]
+        mod, quiet = max(4, round(6 * self.k)), 3  # whole pixels: sharp modules a phone reads at a glance
+        size = (len(m) + 2 * quiet) * mod
+        tx = round(x0 + p(24)) + size + p(32)
+        text = tr("matter_scan")
+        th = self.wrap_h(text, self.fonts["body"], x1 - p(20) - tx)
+        h = max(size + p(48), p(30) + p(32) + th + p(14) + p(40) + p(16) + p(34) + p(24))
+        self._card(y, h)
+        qx, qy = round(x0 + p(24)), round(y + p(24))
+        self.S("round", 0xFFFFFF, qx, qy, size, size, p(8))
+        for r, row in enumerate(m):
+            start = None
+            for c, dark in enumerate(list(row) + [False]):  # dark runs of each row: few shapes
+                if dark and start is None:
+                    start = c
+                elif not dark and start is not None:
+                    self.S("round", 0x000000, qx + (quiet + start) * mod, qy + (quiet + r) * mod, (c - start) * mod,
+                           mod, 0)
+                    start = None
+        ty = y + p(30)
+        self.T(tr("matter_scan_title"), self.fonts["h2"], MenuPainter.TEXT, tx, ty, x1 - p(20), ty + p(24), 0x8000)
+        ty += p(32)
+        self.W(text, self.fonts["body"], MenuPainter.MUTED, tx, ty, x1 - p(20), ty + th)
+        ty += th + p(14)
+        c = info["code"]
+        self.T(f"{c[:4]}-{c[4:7]}-{c[7:]}", self.fonts["hero"], MenuPainter.TEXT, tx, ty, x1 - p(20), ty + p(40),
+               0x8000)
+        by = y + h - p(24) - p(34)
+        self._button("matter:stop", x1 - p(20), by, tr("matter_stop"), "quiet")
+        self.T(tr("matter_open_for", min=minutes), self.painter.f_small, MenuPainter.GREEN, tx, by, x1 - p(140),
+               by + p(34), 0x8000)
+        return y + h
+
     def _page_settings(self, y):
         p, s, t = self.px, self.state, self.tray
         x0, x1 = self.cx0, self.cx1
@@ -7611,7 +10930,7 @@ class AppWindow:
                 t.autostart = autostart_enabled()
             self._timers()
         elif wid == "enabled":
-            s.update(enabled=not s.enabled)
+            s.switch()
             t.refresh()
         elif wid.startswith("mode:"):
             s.update(mode=wid[5:])
@@ -7666,6 +10985,20 @@ class AppWindow:
             t.ha_changed()
         elif wid == "link:guide":
             os.startfile(ha_guide_url())
+        elif wid == "matter:on":
+            t.matter_toggle()
+        elif wid == "matter:pair" and t.matter:
+            node = t.matter
+            node.call(lambda: node.open_window(900))
+        elif wid == "matter:stop" and t.matter:
+            t.matter.call(t.matter.close_window)
+        elif wid.startswith("matter:remove:") and t.matter:
+            node, index = t.matter, int(wid.rsplit(":", 1)[1])
+            name = next((matter_app_name(f) for f in node.pairing()["fabrics"] if f["index"] == index), "")
+            if user32.MessageBoxW(self.hwnd, tr("matter_remove_ask", app=name), "Glowback", 0x24) == 6:  # Yes
+                node.call(lambda: node.remove_fabric(index))
+        elif wid == "link:matter":
+            os.startfile(matter_guide_url())
         elif wid == "open:log":
             os.startfile(LOG_PATH)
         elif wid.startswith("link:"):

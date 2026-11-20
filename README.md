@@ -49,6 +49,7 @@ Glowback is not tied to one brand. It drives any LED device that **Windows Dynam
 - 🪟 **A real Windows app**: a window with a live preview of your screen and your LEDs, quick settings from the icon next to the clock, installer, Start menu, start with Windows, and clean uninstall from *Settings → Apps*.
 - 🌙 **Profiles**: a softer light at night, at the hours you choose, and a look for each app: music while Spotify plays, the screen for games, blue in your code editor. Or follow the screen only while an app is open.
 - 🔄 **Update notifications**: Glowback checks GitHub once a day and tells you when a new version is out. One switch turns it off.
+- 📱 **Apple Home, Google Home & Alexa, without Home Assistant**: with Matter, Glowback is a light in your phone's Home app. Switch it, dim it and color it by hand, in scenes or by voice.
 - 🏠 **Home Assistant, Google Assistant, Alexa & Siri**: Glowback shows up as a light you switch, dim and color from dashboards, automations or by voice.
 - 🌍 **6 languages**: English, French, Spanish, German, Italian and Portuguese, picked from your Windows language.
 - 🔌 **Plug and play**: finds Dynamic Lighting devices and OpenRGB automatically, and reads the physical position of every LED.
@@ -100,6 +101,7 @@ Start Glowback from the Start menu and its window opens. Close it and Glowback k
 - **Ambient light**: a live preview of your screen and of the light your LEDs throw on the wall, the on/off switch, the [look](#-looks) (screen, average, color, gradient or music) and the brightness
 - **Profiles**: a [night profile and a look per app](#-profiles)
 - **Home Assistant**: connection status and setup, what Home Assistant sees, voice assistants
+- **Apple & Google**: Glowback as a [Matter light](#-apple-home-google-home-and-alexa) in Apple Home, Google Home or Alexa: its pairing code and the apps it is paired with
 - **Settings**: start with Windows, updates (now, or automatically once a day), interface language, log
 - **About**: version, website, source code, report a problem
 
@@ -183,6 +185,28 @@ automation:
 ```
 
 From the command line: `glowback --home-assistant mqtt://glowback:PASSWORD@homeassistant.local` (`mqtts://` for TLS on port 8883, `off` to remove Glowback from Home Assistant).
+
+## 📱 Apple Home, Google Home and Alexa
+
+Glowback can also be a **Matter** light, without Home Assistant: your phone's Home app switches it, dims it and changes its color, by hand, in scenes and automations, or by voice with Siri, Google Assistant or Alexa.
+
+1. **In Glowback**: open the **Apple & Google** page and turn on **Matter light**. A QR code and an 11-digit code show up for 15 minutes. Windows may ask to let Glowback through its firewall: allow it (installed for all users, Glowback already lets in the devices of your local network).
+2. **On your phone**, on the same network as the PC:
+   - **Apple Home**: tap **+** → *Add Accessory* and scan the QR code (or *More options…* and type the code). Glowback is not certified by the Connectivity Standards Alliance, so Apple Home says *Uncertified Accessory*: tap *Add Anyway*.
+   - **Google Home**: Google only adds uncertified devices to accounts set up for testing. Once, in the [Google Home Developer Console](https://console.home.google.com): create a project, then a **Matter integration** with vendor ID `0xFFF1` and product ID `0x8000`. Then, in the Google Home app signed in with the same account: *Devices → Add → Matter-enabled device*, and scan the code.
+   - **Other Matter apps** (Alexa, SmartThings, Home Assistant's Matter integration…): add a Matter device and scan the code, if the app accepts uncertified devices.
+3. **A second app** (Google Home after Apple Home, say): click **Pair a phone** in Glowback and scan again from the other app. Or share the light from the first app (Apple Home: the light's settings → *Turn On Pairing Mode*) and type that code in the other one.
+
+| In the phone's app | In Glowback |
+|---|---|
+| On / off | Ambient light on / paused |
+| Brightness | Brightness |
+| A color or a white | The Color look, in that color |
+| Identify | The LEDs blink white |
+
+The other looks (screen, gradient, music) and the profiles are chosen in Glowback; the phone still turns them on and off and sets their brightness. The light shows as unavailable while the PC sleeps or Glowback is closed.
+
+Everything stays on your network: Glowback answers on UDP port 5540 and announces itself with mDNS (port 5353). It keeps its pairings in `%LOCALAPPDATA%\Glowback\matter.json`, keys encrypted for your Windows account. To unpair an app, click **Remove** next to it; to hide the light, turn Matter off.
 
 ## 🗑️ Uninstall
 
