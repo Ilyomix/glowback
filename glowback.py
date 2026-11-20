@@ -195,7 +195,22 @@ KINDS = {0: "undefined", 1: "keyboard", 2: "mouse", 3: "game controller", 4: "pe
 NOT_AMBIENT_KINDS = {1, 2, 3}  # skipped unless --device all / a name filter selects them
 
 STOP_EVENT = "Local\\Glowback.Stop"
-LOG_DIR = os.path.join(os.environ.get("LOCALAPPDATA", os.path.expanduser("~")), "Glowback")
+_sig(k32.GetCurrentPackageFamilyName, wt.LONG, ctypes.POINTER(wt.UINT), wt.LPWSTR)
+
+
+def package_family():
+    """Package family name when Glowback runs from its Microsoft Store package (MSIX), else None."""
+    n = wt.UINT(0)
+    if k32.GetCurrentPackageFamilyName(byref(n), None) != 122:  # ERROR_INSUFFICIENT_BUFFER: there is a package
+        return None  # APPMODEL_ERROR_NO_PACKAGE: GlowbackSetup.exe, portable, pip or the .py file
+    name = ctypes.create_unicode_buffer(n.value)
+    return name.value if k32.GetCurrentPackageFamilyName(byref(n), name) == 0 else None
+
+
+PACKAGE = package_family()  # the Store version: the Store updates it, Windows starts it at sign-in (StartupTask)
+LOCAL_APPDATA = os.environ.get("LOCALAPPDATA", os.path.expanduser("~"))
+LOG_DIR = (os.path.join(LOCAL_APPDATA, "Packages", PACKAGE, "LocalState") if PACKAGE  # removed with the Store app
+           else os.path.join(LOCAL_APPDATA, "Glowback"))
 LOG_PATH = os.path.join(LOG_DIR, "glowback.log")
 LOG_PREVIOUS = os.path.join(LOG_DIR, "glowback.previous.log")
 
@@ -2612,7 +2627,9 @@ STRINGS = {
         'home_voice': 'Voice assistants',
         'home_voice_text': 'Google Assistant and Alexa work through Home Assistant, Siri and the Home app through its HomeKit Bridge integration.',
         'settings_sub': 'Startup, updates and language.',
+        'settings_sub_store': 'Startup and language.',
         'settings_start_desc': 'Glowback starts in the background when you sign in.',
+        'startup_store_desc': "Turn Glowback on or off in Windows' startup apps.",
         'settings_updates': 'Updates',
         'settings_check_desc': 'Once a day, Glowback asks GitHub whether a new version is out.',
         'settings_check_now': 'Check now',
@@ -2847,7 +2864,9 @@ STRINGS = {
         'home_voice': 'Assistants vocaux',
         'home_voice_text': "Google Assistant et Alexa passent par Home Assistant, Siri et l'app Maison par son intégration HomeKit Bridge.",
         'settings_sub': 'Démarrage, mises à jour et langue.',
+        'settings_sub_store': 'Démarrage et langue.',
         'settings_start_desc': "Glowback démarre en arrière-plan à l'ouverture de session.",
+        'startup_store_desc': 'Activez ou désactivez Glowback dans les applications de démarrage de Windows.',
         'settings_updates': 'Mises à jour',
         'settings_check_desc': 'Une fois par jour, Glowback demande à GitHub si une nouvelle version est sortie.',
         'settings_check_now': 'Rechercher',
@@ -3082,7 +3101,9 @@ STRINGS = {
         'home_voice': 'Asistentes de voz',
         'home_voice_text': 'Google Assistant y Alexa funcionan a través de Home Assistant, Siri y la app Casa con su integración HomeKit Bridge.',
         'settings_sub': 'Inicio, actualizaciones e idioma.',
+        'settings_sub_store': 'Inicio e idioma.',
         'settings_start_desc': 'Glowback se inicia en segundo plano al iniciar sesión.',
+        'startup_store_desc': 'Activa o desactiva Glowback en las aplicaciones de inicio de Windows.',
         'settings_updates': 'Actualizaciones',
         'settings_check_desc': 'Una vez al día, Glowback pregunta a GitHub si hay una versión nueva.',
         'settings_check_now': 'Buscar',
@@ -3317,7 +3338,9 @@ STRINGS = {
         'home_voice': 'Sprachassistenten',
         'home_voice_text': 'Google Assistant und Alexa funktionieren über Home Assistant, Siri und die Home-App über seine Integration HomeKit Bridge.',
         'settings_sub': 'Start, Updates und Sprache.',
+        'settings_sub_store': 'Start und Sprache.',
         'settings_start_desc': 'Glowback startet bei der Anmeldung im Hintergrund.',
+        'startup_store_desc': 'Schalte Glowback in den Autostart-Apps von Windows ein oder aus.',
         'settings_updates': 'Updates',
         'settings_check_desc': 'Einmal am Tag fragt Glowback bei GitHub nach einer neuen Version.',
         'settings_check_now': 'Suchen',
@@ -3552,7 +3575,9 @@ STRINGS = {
         'home_voice': 'Assistenti vocali',
         'home_voice_text': "Google Assistant e Alexa funzionano tramite Home Assistant, Siri e l'app Casa con la sua integrazione HomeKit Bridge.",
         'settings_sub': 'Avvio, aggiornamenti e lingua.',
+        'settings_sub_store': 'Avvio e lingua.',
         'settings_start_desc': "Glowback si avvia in background all'accesso.",
+        'startup_store_desc': 'Attiva o disattiva Glowback nelle app di avvio di Windows.',
         'settings_updates': 'Aggiornamenti',
         'settings_check_desc': 'Una volta al giorno, Glowback chiede a GitHub se è uscita una nuova versione.',
         'settings_check_now': 'Controlla',
@@ -3787,7 +3812,9 @@ STRINGS = {
         'home_voice': 'Assistentes de voz',
         'home_voice_text': 'O Google Assistente e a Alexa funcionam pelo Home Assistant, a Siri e o app Casa pela integração HomeKit Bridge dele.',
         'settings_sub': 'Inicialização, atualizações e idioma.',
+        'settings_sub_store': 'Inicialização e idioma.',
         'settings_start_desc': 'O Glowback inicia em segundo plano quando você entra no Windows.',
+        'startup_store_desc': 'Ative ou desative o Glowback nos aplicativos de inicialização do Windows.',
         'settings_updates': 'Atualizações',
         'settings_check_desc': 'Uma vez por dia, o Glowback pergunta ao GitHub se saiu uma nova versão.',
         'settings_check_now': 'Verificar',
@@ -3917,6 +3944,7 @@ def tr(key, **kw):
 SETTINGS_PATH = os.path.join(LOG_DIR, "settings.json")
 START_MENU_LNK = os.path.join(os.environ.get("APPDATA", ""), r"Microsoft\Windows\Start Menu\Programs", "Glowback.lnk")
 RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
+STARTUP_SETTINGS = "ms-settings:startupapps"  # where the Store version's start with Windows is turned on or off
 REPO_URL = "https://github.com/Ilyomix/glowback"
 AUTHOR, AUTHOR_URL = "Ilyomix", "https://github.com/Ilyomix"
 
@@ -3941,6 +3969,20 @@ def save_settings(data):
             os.makedirs(LOG_DIR, exist_ok=True)
             with open(SETTINGS_PATH, "w", encoding="utf-8") as f:
                 json.dump(merged, f, indent=1)
+        except OSError:
+            pass
+
+
+def store_first_run():
+    """First start of the Store version: it keeps the settings and the Matter pairings of a Glowback installed before
+    (GlowbackSetup.exe, portable, pip), so the light stays in the phone's Home app."""
+    if not PACKAGE or os.path.exists(SETTINGS_PATH):
+        return
+    import shutil
+    os.makedirs(LOG_DIR, exist_ok=True)
+    for name in ("settings.json", "matter.json"):
+        try:
+            shutil.copyfile(os.path.join(LOCAL_APPDATA, "Glowback", name), os.path.join(LOG_DIR, name))
         except OSError:
             pass
 
@@ -5169,6 +5211,7 @@ class Tray:
                   dict(kind="toggle", id=1, icon="light", text=tr("ambilight"), on=s.lit()),
                   dict(kind="action", id=28, icon="layers", text=tr("nav_profiles"), status=self._profile_status(),
                        statuses=(tr("profiles_none"), tr("profiles_many", n=12), tr("night_short"), "Spotify Premium")),
+                  dict(kind="action", id=20, icon="power", text=tr("start_windows"), link=True) if PACKAGE else
                   dict(kind="toggle", id=20, icon="power", text=tr("start_windows"), on=self.autostart),
                   dict(kind="action", id=27, icon="home", text="Home Assistant", status=Tray._ha_status(self),
                        statuses=(tr("ha_setup"), tr("ha_connected"), tr("ha_connecting"), tr("ha_error"))),
@@ -5186,6 +5229,8 @@ class Tray:
                   dict(kind="action", id=21, icon="doc", text=tr("open_log")),
                   dict(kind="sep"),
                   dict(kind="action", id=99, icon="quit", text=tr("quit"))]
+        if PACKAGE:  # the Store updates the Store version
+            items = [it for it in items if it.get("id") not in (24, 26)]
         for i, it in enumerate(items):
             if i == self.hover:
                 it["hover_seg"] = self.hover_seg
@@ -5369,7 +5414,7 @@ class Tray:
         if cid == 1:  # settings change in place: the panel stays open
             s.switch()
             self.refresh()
-        elif cid == 20:
+        elif cid == 20 and not PACKAGE:
             set_autostart(not self.autostart, self.argv)
             self.autostart = autostart_enabled()
         elif cid == 24:
@@ -5392,6 +5437,8 @@ class Tray:
                 os.startfile(AUTHOR_URL)
             elif cid in (25, 26):  # a new version is out: download and install it
                 self.start_update()
+            elif cid == 20:  # the Store version: Windows' startup apps
+                os.startfile(STARTUP_SETTINGS)
             elif cid == 27:
                 self.open_app("home")
             elif cid == 28:
@@ -5462,6 +5509,8 @@ def latest_release():
 
 
 def install_kind():
+    if PACKAGE:
+        return "store"  # updated by the Microsoft Store
     if getattr(sys, "frozen", False):
         here = os.path.dirname(sys.executable)
         return "installer" if os.path.exists(os.path.join(here, "unins000.exe")) else "portable"
@@ -5495,6 +5544,8 @@ def apply_update(info):
     import shutil
     import tempfile
     kind = install_kind()
+    if kind == "store":
+        raise OSError("the Microsoft Store updates this Glowback")
     assets = info["assets"]
     if kind == "installer":
         name = "GlowbackSetup.exe"
@@ -5586,8 +5637,9 @@ def run_with_tray(args, stop, state, argv):
     t = threading.Thread(target=worker, name="glowback-capture", daemon=True)
     tray.worker = t
     t.start()
-    threading.Thread(target=update_checker, name="glowback-update", daemon=True,
-                     args=(state, stop, lambda: user32.PostMessageW(tray.hwnd, Tray.WM_UPDATE, 0, 0))).start()
+    if not PACKAGE:  # the Store updates the Store version
+        threading.Thread(target=update_checker, name="glowback-update", daemon=True,
+                         args=(state, stop, lambda: user32.PostMessageW(tray.hwnd, Tray.WM_UPDATE, 0, 0))).start()
     if matter_settings().get("on"):
         tray.matter = matter_start(state, tray.matter_notify)
     if not (args.from_autostart or args.after_update):  # by hand (Start menu, installer): the window. At sign-in
@@ -10783,33 +10835,38 @@ class AppWindow:
     def _page_settings(self, y):
         p, s, t = self.px, self.state, self.tray
         x0, x1 = self.cx0, self.cx1
-        y = self._header(y, tr("nav_settings"), tr("settings_sub"))
+        y = self._header(y, tr("nav_settings"), tr("settings_sub_store" if PACKAGE else "settings_sub"))
         rh = p(68)
         self._card(y, rh)
         tx = x1 - p(20) - p(42)
-        self._toggle("autostart", tx, y + (rh - p(22)) / 2, t.autostart, row=(x0, y, x1, y + rh))
-        self._row_text(y, rh, "power", tr("start_windows"), tr("settings_start_desc"), right=tx - p(16))
-        y += rh + p(28)
-        y = self._label(y, tr("settings_updates"))
-        rows = 2
-        self._card(y, rh * rows)
-        ry = y
-        if s.new_version:  # the check button becomes the one that downloads and installs it
-            bx = self._button("update", x1 - p(20), ry + (rh - p(34)) / 2, tr("update_to", version=s.new_version),
-                              "primary", icon="sync", busy=getattr(t, "updating", False))
-            self._row_text(ry, rh, "sync", tr("settings_new", version=s.new_version), f"Glowback {__version__}",
-                           right=bx - p(16), icon_color=MenuPainter.ACCENT)
+        if PACKAGE:  # the Store version: Windows starts it (Settings > Apps > Startup), the Store updates it
+            bx = self._button("autostart", x1 - p(20), y + (rh - p(34)) / 2, tr("settings_open"), "secondary")
+            self._row_text(y, rh, "power", tr("start_windows"), tr("startup_store_desc"), right=bx - p(16))
+            y += rh + p(28)
         else:
-            result = t._check_status()
-            bx = self._button("check", x1 - p(20), ry + (rh - p(34)) / 2, tr("settings_check_now"), "secondary",
-                              busy=t.checking)
-            self._row_text(ry, rh, "sync", tr("updates"), result[0] if result else f"Glowback {__version__}",
-                           right=bx - p(16), desc_color=result[1] if result else None)
-        ry += rh
-        self._sep(ry)
-        self._toggle("auto_check", tx, ry + (rh - p(22)) / 2, s.check_updates, row=(x0, ry, x1, ry + rh))
-        self._row_text(ry, rh, "clock", tr("auto_check"), tr("settings_check_desc"), right=tx - p(16))
-        y += rh * rows + p(28)
+            self._toggle("autostart", tx, y + (rh - p(22)) / 2, t.autostart, row=(x0, y, x1, y + rh))
+            self._row_text(y, rh, "power", tr("start_windows"), tr("settings_start_desc"), right=tx - p(16))
+            y += rh + p(28)
+            y = self._label(y, tr("settings_updates"))
+            rows = 2
+            self._card(y, rh * rows)
+            ry = y
+            if s.new_version:  # the check button becomes the one that downloads and installs it
+                bx = self._button("update", x1 - p(20), ry + (rh - p(34)) / 2, tr("update_to", version=s.new_version),
+                                  "primary", icon="sync", busy=getattr(t, "updating", False))
+                self._row_text(ry, rh, "sync", tr("settings_new", version=s.new_version), f"Glowback {__version__}",
+                               right=bx - p(16), icon_color=MenuPainter.ACCENT)
+            else:
+                result = t._check_status()
+                bx = self._button("check", x1 - p(20), ry + (rh - p(34)) / 2, tr("settings_check_now"), "secondary",
+                                  busy=t.checking)
+                self._row_text(ry, rh, "sync", tr("updates"), result[0] if result else f"Glowback {__version__}",
+                               right=bx - p(16), desc_color=result[1] if result else None)
+            ry += rh
+            self._sep(ry)
+            self._toggle("auto_check", tx, ry + (rh - p(22)) / 2, s.check_updates, row=(x0, ry, x1, ry + rh))
+            self._row_text(ry, rh, "clock", tr("auto_check"), tr("settings_check_desc"), right=tx - p(16))
+            y += rh * rows + p(28)
         y = self._label(y, tr("settings_lang"))
         self._card(y, rh)
         pw = p(230)
@@ -10972,8 +11029,11 @@ class AppWindow:
                 value = (value + (30 if step == "+" else -30)) % 1440
             s.set_profiles(night=dict(s.night, **{key: value}))
         elif wid == "autostart":
-            set_autostart(not t.autostart, t.argv)
-            t.autostart = autostart_enabled()
+            if PACKAGE:
+                os.startfile(STARTUP_SETTINGS)
+            else:
+                set_autostart(not t.autostart, t.argv)
+                t.autostart = autostart_enabled()
         elif wid == "auto_check":
             s.update(check_updates=not s.check_updates)
         elif wid == "check":
@@ -11485,6 +11545,9 @@ def _passthrough(raw):
 def main(argv=None):
     raw = list(sys.argv[1:] if argv is None else argv)
     args = parse_args(raw)
+    if PACKAGE and os.path.basename(sys.executable).lower().startswith("glowbackbackground"):
+        args.background = args.from_autostart = True  # the Store package's startup task: no window
+    store_first_run()
     if args.color is not None and hex_color(args.color) is None:
         sys.exit("--color: a color like #FF8800")
     if args.gradient is not None and clean_stops(args.gradient) is None:

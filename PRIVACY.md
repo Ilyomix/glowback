@@ -6,7 +6,7 @@ Glowback runs on your computer. It has no account, no telemetry, no analytics an
 
 | When | Where | What is sent | Turn it off |
 |---|---|---|---|
-| About 30 seconds after Glowback starts, then once a day. On by default | `api.github.com`, to read the latest release | An HTTPS request with the user agent `Glowback/<version>` | Untick *Check for a new version once a day* in the installer, switch off *Check automatically* in Glowback's panel, or run `glowback --check-updates off` |
+| About 30 seconds after Glowback starts, then once a day. On by default | `api.github.com`, to read the latest release | An HTTPS request with the user agent `Glowback/<version>` | Untick *Check for a new version once a day* in the installer, switch off *Check automatically* in Glowback's panel, or run `glowback --check-updates off`. The Microsoft Store version never checks: the Store updates it |
 | When you click *Check for updates* or *Update to …* | `api.github.com` and `github.com`, to read the latest release and download it with its `SHA256SUMS.txt` | HTTPS requests with the same user agent | Only happens when you click |
 | When OpenRGB runs on your PC, or when you use `--openrgb` | The OpenRGB SDK server on your PC (`127.0.0.1:6742`) or the address you gave | Requests for the device list, then LED colors | `--openrgb off` |
 | Only while *Matter light* is on (the *Apple & Google* page) | Your local network only. Glowback answers on UDP port 5540 and announces itself with mDNS (multicast, port 5353), so phones and hubs on your network can find it | To the Matter apps you paired (Apple Home, Google Home…), over encrypted Matter sessions: on/off, brightness and color, and what any Matter light tells its controllers (product name, version, the network addresses of this PC). While pairing is open, anyone on your network who has the setup code can pair | Switch *Matter light* off; remove one app with *Remove* |
@@ -31,6 +31,8 @@ Only while the *Music* look shows, Glowback listens to what Windows plays on its
 ## Files on your computer
 
 `%LOCALAPPDATA%\Glowback` holds your settings (`settings.json`) and the log of the last session (`glowback.log`). The settings include your colors, your profiles and the apps you add, with each app's name and file path. If you connect Home Assistant, the settings also hold the broker address and user name, and the password encrypted for your Windows account. If you turn on Matter, `matter.json` holds its setup code and the apps it is paired with, their keys encrypted for your Windows account. Uninstalling Glowback removes this folder, the startup entry and the Start menu shortcuts, and removes Glowback from Home Assistant. For the portable and Python versions, `glowback --uninstall` does the same.
+
+The Microsoft Store version keeps the same files in its own folder, `%LOCALAPPDATA%\Packages\Ilyomix.Glowback_y5wc0ym4mfvr4\LocalState`, which Windows deletes when you uninstall it; to remove it from Home Assistant as well, click *Disconnect* first. If you used another version of Glowback before, the Store version copies its `settings.json` and `matter.json` on its first start, so your settings and paired apps carry over.
 
 ## Changes
 

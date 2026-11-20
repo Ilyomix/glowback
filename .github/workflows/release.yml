@@ -247,6 +247,10 @@ jobs:
           Get-ChildItem "$env:RUNNER_TEMP\setup-logs" -ErrorAction SilentlyContinue | ForEach-Object { "== $($_.Name)"; Get-Content $_.FullName }
           Get-Process | Where-Object MainWindowTitle | Format-Table Id, ProcessName, MainWindowTitle -AutoSize | Out-String -Width 400
 
+      # The Store signs it: uploaded by hand in Partner Center (installer/msix/make_msix.py)
+      - name: Microsoft Store package (MSIX)
+        run: python installer/msix/make_msix.py $env:VERSION
+
       - name: Python wheel, single file and checksums (used by in-app updates)
         run: |
           python -m pip wheel --no-deps -w dist .
@@ -279,9 +283,12 @@ jobs:
             dist/SHA256SUMS.txt
           generate_release_notes: true
 
-      - name: Keep the installer as a build artifact
-        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+      - name: Keep the installer and the Store package as build artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: GlowbackSetup
-          path: dist/GlowbackSetup.exe
+          name: Glowback-${{ env.VERSION }}
+          path: |
+            dist/GlowbackSetup.exe
+            dist/Glowback.msix
+            dist/SHA256SUMS.txt
+          if-no-files-found: error
