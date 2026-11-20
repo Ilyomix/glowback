@@ -36,6 +36,7 @@ Glowback no depende de ninguna marca: controla cualquier dispositivo que la **Il
 - 🎨 **Colores, degradados y música**: además de la pantalla, un color, un degradado (fijo o en movimiento), o LED que siguen el sonido de tu PC: pulso, espectro u ondas.
 - 🌙 **Perfiles**: una luz más suave de noche, a las horas que elijas, y un ambiente para cada app: música mientras suena Spotify, la pantalla para los juegos, azul en tu editor de código.
 - 🔄 **Aviso de actualizaciones** una vez al día (desactivable).
+- 📱 **Apple Casa, Google Home y Alexa, sin Home Assistant**: con Matter, Glowback es una luz en la app Casa de tu teléfono. Página *Apple y Google* de Glowback; guía en el [README en inglés](README.md#-apple-home-google-home-and-alexa).
 - 🏠 **Home Assistant, Google Assistant, Alexa y Siri**: Glowback aparece como una luz que se controla desde paneles, automatizaciones o por voz.
 - 🌍 **6 idiomas**, según el idioma de Windows.
 - 🔌 **Plug and play**: detecta automáticamente los dispositivos de Iluminación dinámica y OpenRGB.
