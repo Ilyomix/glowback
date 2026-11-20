@@ -43,7 +43,7 @@ from array import array
 from ctypes import byref, sizeof
 from operator import itemgetter, mul
 
-__version__ = "0.7.0"
+__version__ = "0.7.1"
 
 if sys.platform != "win32":
     sys.exit("Glowback runs on Windows 10/11 (it drives HID LampArray / Dynamic Lighting devices).")
@@ -10236,10 +10236,12 @@ class AppWindow:
         p, (W, H) = self.px, self.size
         self.widgets, self.side, self.content, self.preview_rect = [], ([], []), ([], []), None
         self.sw = p(264)
-        self.cx0 = self.sw + p(8)
-        self.cx1 = max(self.cx0 + p(380), min(W - p(36), self.cx0 + p(860)))
+        room = W - self.sw - p(8) - p(36)  # right of the sidebar
+        width = max(p(380), min(room, p(1200)))
+        self.cx0 = self.sw + p(8) + max(0, (room - width) // 2)  # a wide or maximized window: the page in the middle
+        self.cx1 = self.cx0 + width
         self._sidebar()
-        y = getattr(self, "_page_" + self.page)(p(30) - self.scroll)
+        y = getattr(self, "_page_" + self.page)(p(18) - self.scroll)  # the page title centred on the logo beside it
         self._nav("quit", p(14), H - p(18) - p(38), self.sw - p(28), "quit", tr("app_quit"), False, quiet=True)
         self.max_scroll = max(0, y + self.scroll + p(36) - H)
         if self.scroll > self.max_scroll:  # taller window, or a shorter page: show its end
