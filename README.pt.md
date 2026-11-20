@@ -2,23 +2,28 @@
   <img src="assets/banner-pt.svg" alt="Glowback: luz ambiente para os LEDs RGB na traseira do seu monitor, cada LED sincronizado com a imagem em tempo real" width="100%">
 </p>
 
+<h1 align="center">Glowback</h1>
+
+<p align="center">
+  <b>Luz ambiente para monitores com LEDs RGB na traseira.</b><br>
+  Um app gratuito e de código aberto para Windows: cada LED acompanha a imagem bem à sua frente, em tempo real, em dispositivos de Iluminação dinâmica do Windows 11 e OpenRGB.
+</p>
+
+<p align="center">
+  <a href="https://github.com/Ilyomix/glowback/releases/latest"><img alt="Versão mais recente" src="https://img.shields.io/github/v/release/Ilyomix/glowback?label=release&color=8b6cff"></a>
+  <a href="https://github.com/Ilyomix/glowback/releases"><img alt="Downloads" src="https://img.shields.io/github/downloads/Ilyomix/glowback/total?color=00ccff"></a>
+  <a href="https://github.com/Ilyomix/glowback/actions/workflows/ci.yml"><img alt="Testes" src="https://github.com/Ilyomix/glowback/actions/workflows/ci.yml/badge.svg"></a>
+  <img alt="Windows 10 e 11" src="https://img.shields.io/badge/Windows-10%20%7C%2011-0078d4">
+  <a href="LICENSE"><img alt="Licença MIT" src="https://img.shields.io/badge/license-MIT-3ddc97"></a>
+</p>
+
+<p align="center">
+  <a href="https://github.com/Ilyomix/glowback/releases/latest/download/GlowbackSetup.exe"><b>⬇ Baixar para Windows</b></a>
+  &nbsp;·&nbsp; <a href="https://ilyomix.github.io/glowback/pt/"><b>Site</b></a>
+</p>
+
 <p align="center">
   <a href="README.md">English</a> · <a href="README.fr.md">Français</a> · <a href="README.es.md">Español</a> · <a href="README.de.md">Deutsch</a> · <a href="README.it.md">Italiano</a> · <b>Português</b>
-</p>
-
-<h1 align="center">Glowback: luz ambiente para monitores com LEDs RGB na traseira</h1>
-
-<p align="center">
-  <b>Sincronização com a tela, gratuita e de código aberto, para os LEDs RGB na traseira do seu monitor.</b><br>
-  Cada LED acompanha a parte da imagem bem à sua frente, em tempo real.<br>
-  Compatível com dispositivos de <b>Iluminação dinâmica do Windows 11</b> e <b>OpenRGB</b>. Sem fita LED, câmera ou software do fabricante.
-</p>
-
-<p align="center">
-  <a href="https://github.com/Ilyomix/glowback/releases/latest/download/GlowbackSetup.exe"><img alt="Baixar para Windows" src="https://img.shields.io/github/v/release/Ilyomix/glowback?label=baixar%20para%20Windows&color=7c3aed"></a>
-  <img alt="Windows 10/11" src="https://img.shields.io/badge/Windows-10%20%7C%2011-0078D6?logo=windows">
-  <img alt="HDR" src="https://img.shields.io/badge/HDR-compat%C3%ADvel-ff8a3d">
-  <a href="LICENSE"><img alt="Licença MIT" src="https://img.shields.io/badge/licen%C3%A7a-MIT-blue"></a>
 </p>
 
 ---
@@ -48,7 +53,9 @@ O Glowback não depende de nenhuma marca: ele controla qualquer dispositivo que 
 2. **Desative a Iluminação dinâmica do Windows para esse dispositivo**: *Configurações → Personalização → Iluminação dinâmica → seu dispositivo → "Usar a Iluminação dinâmica nos meus dispositivos" → Desativado*.
 3. **Baixe o [GlowbackSetup.exe](https://github.com/Ilyomix/glowback/releases/latest/download/GlowbackSetup.exe)** e siga o assistente (não precisa de permissão de administrador).
 
-> O Windows SmartScreen pode avisar sobre um editor desconhecido porque o app ainda não é assinado: *Mais informações → Executar assim mesmo*. [Política de assinatura de código](CODE_SIGNING.md) · [Privacidade](PRIVACY.md)
+Cada versão é compilada pelo [GitHub Actions](.github/workflows/release.yml) a partir deste código-fonte, testada (incluindo instalação e desinstalação) e publicada com somas de verificação SHA-256.
+
+> **Assinatura de código**: o Glowback está solicitando a assinatura de código gratuita da [SignPath Foundation](https://signpath.org/) para projetos de código aberto; os arquivos do Windows serão assinados por ela assim que o projeto for aceito. Até lá, o Windows SmartScreen pode avisar sobre um editor desconhecido: clique em *Mais informações → Executar assim mesmo*. [Política de assinatura de código](CODE_SIGNING.md) · [Privacidade](PRIVACY.md)
 
 Para conferir a orientação dos LEDs: *menu Iniciar → Ferramentas do Glowback → Testar os LEDs* (esquerda vermelha, direita azul).
 
@@ -91,6 +98,10 @@ O Glowback pode aparecer no Home Assistant como uma luz (liga/desliga, brilho, c
 **As cores estão do lado errado.** Use *Testar os LEDs*; se esquerda e direita estiverem invertidas, adicione `--mirror`.
 
 Opções de linha de comando e detalhes técnicos: [README em inglês](README.md#%EF%B8%8F-command-line).
+
+## 🧩 Outros projetos meus
+
+[**Keyboard Clock**](https://github.com/Ilyomix/keyboard-clock): a hora em dígitos grandes no seu teclado RGB, para teclados Logitech G, Razer, Corsair, ASUS, SteelSeries, HyperX e OpenRGB.
 
 ## ⭐ Apoio
 

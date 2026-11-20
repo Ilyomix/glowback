@@ -2,35 +2,28 @@
   <img src="assets/banner-fr.svg" alt="Glowback : lumière d'ambiance pour les LED RGB au dos de votre écran, chaque LED synchronisée à l'image en temps réel" width="100%">
 </p>
 
+<h1 align="center">Glowback</h1>
+
+<p align="center">
+  <b>La lumière d'ambiance pour les écrans avec LED RGB à l'arrière.</b><br>
+  Une app Windows gratuite et open source : chaque LED suit l'image juste devant elle, en temps réel, sur les appareils Éclairage dynamique de Windows 11 et OpenRGB.
+</p>
+
+<p align="center">
+  <a href="https://github.com/Ilyomix/glowback/releases/latest"><img alt="Dernière version" src="https://img.shields.io/github/v/release/Ilyomix/glowback?label=release&color=8b6cff"></a>
+  <a href="https://github.com/Ilyomix/glowback/releases"><img alt="Téléchargements" src="https://img.shields.io/github/downloads/Ilyomix/glowback/total?color=00ccff"></a>
+  <a href="https://github.com/Ilyomix/glowback/actions/workflows/ci.yml"><img alt="Tests" src="https://github.com/Ilyomix/glowback/actions/workflows/ci.yml/badge.svg"></a>
+  <img alt="Windows 10 et 11" src="https://img.shields.io/badge/Windows-10%20%7C%2011-0078d4">
+  <a href="LICENSE"><img alt="Licence MIT" src="https://img.shields.io/badge/license-MIT-3ddc97"></a>
+</p>
+
+<p align="center">
+  <a href="https://github.com/Ilyomix/glowback/releases/latest/download/GlowbackSetup.exe"><b>⬇ Télécharger pour Windows</b></a>
+  &nbsp;·&nbsp; <a href="https://ilyomix.github.io/glowback/fr/"><b>Site web</b></a>
+</p>
+
 <p align="center">
   <a href="README.md">English</a> · <b>Français</b> · <a href="README.es.md">Español</a> · <a href="README.de.md">Deutsch</a> · <a href="README.it.md">Italiano</a> · <a href="README.pt.md">Português</a>
-</p>
-
-<h1 align="center">Glowback : la lumière d'ambiance pour les écrans avec LED RGB à l'arrière</h1>
-
-<p align="center">
-  <b>Synchronisation écran gratuite et open source pour les LED RGB au dos de votre écran.</b><br>
-  Chaque LED suit la partie de l'image juste devant elle, en temps réel.<br>
-  Compatible avec les appareils <b>Éclairage dynamique de Windows 11</b> et <b>OpenRGB</b>. Sans ruban LED, caméra ni logiciel constructeur.
-</p>
-
-<p align="center">
-  <a href="https://github.com/Ilyomix/glowback/releases/latest/download/GlowbackSetup.exe"><img alt="Télécharger pour Windows" src="https://img.shields.io/github/v/release/Ilyomix/glowback?label=t%C3%A9l%C3%A9charger%20pour%20Windows&color=7c3aed"></a>
-  <img alt="Windows 10/11" src="https://img.shields.io/badge/Windows-10%20%7C%2011-0078D6?logo=windows">
-  <img alt="Compatible HDR" src="https://img.shields.io/badge/HDR-compatible-ff8a3d">
-  <img alt="6 langues" src="https://img.shields.io/badge/langues-6-0ea5e9">
-  <a href="LICENSE"><img alt="Licence MIT" src="https://img.shields.io/badge/licence-MIT-blue"></a>
-</p>
-
-<p align="center">
-  <a href="#-installation">Installation</a> ·
-  <a href="#-mon-écran-est-il-compatible-">Compatibilité</a> ·
-  <a href="#-lapplication">Application</a> ·
-  <a href="#-ambiances">Ambiances</a> ·
-  <a href="#-profils">Profils</a> ·
-  <a href="#%EF%B8%8F-désinstaller">Désinstaller</a> ·
-  <a href="#-faq">FAQ</a> ·
-  <a href="https://ilyomix.github.io/glowback/fr/">Site</a>
 </p>
 
 ---
@@ -68,7 +61,9 @@ Glowback n'est lié à aucune marque. Il pilote tout appareil que l'**Éclairage
 | Portable | [GlowbackTray.exe](https://github.com/Ilyomix/glowback/releases/latest/download/GlowbackTray.exe) (application) et [glowback.exe](https://github.com/Ilyomix/glowback/releases/latest/download/glowback.exe) (ligne de commande) |
 | Python 3.9+ | `pip install git+https://github.com/Ilyomix/glowback`, puis `glowback --install` |
 
-> **Signature du code** : Glowback demande la signature gratuite de [SignPath Foundation](https://signpath.org/) pour les projets open source ; les fichiers Windows seront signés par ce biais dès que le projet sera accepté. D'ici là, Windows SmartScreen peut signaler un éditeur inconnu : cliquez sur *Informations complémentaires → Exécuter quand même*. Le code source et les versions compilées sont publics sur GitHub. [Politique de signature du code](CODE_SIGNING.md) · [Confidentialité](PRIVACY.md)
+Chaque version est compilée par [GitHub Actions](.github/workflows/release.yml) à partir de ce code source, testée (installation et désinstallation comprises) et publiée avec ses sommes de contrôle SHA-256.
+
+> **Signature du code** : Glowback demande la signature gratuite de [SignPath Foundation](https://signpath.org/) pour les projets open source ; les fichiers Windows seront signés par ce biais dès que le projet sera accepté. D'ici là, Windows SmartScreen peut signaler un éditeur inconnu : cliquez sur *Informations complémentaires → Exécuter quand même*. [Politique de signature du code](CODE_SIGNING.md) · [Confidentialité](PRIVACY.md)
 
 Glowback s'installe ensuite près de l'horloge. Pour vérifier l'orientation des LED : *menu Démarrer → Outils Glowback → Tester les LED*. La gauche doit être rouge, la droite bleue.
 
@@ -292,6 +287,10 @@ Utilisez *Tester les LED* dans le menu Démarrer (ou `glowback --test`). Si gauc
 - [ ] Installateur signé et `winget install Glowback`
 - [ ] Écrans en mode portrait dans la capture DXGI
 - [ ] Firmware RP2040 précompilé (.uf2)
+
+## 🧩 Du même auteur
+
+[**Keyboard Clock**](https://github.com/Ilyomix/keyboard-clock): l'heure en gros chiffres sur votre clavier RGB, pour les claviers Logitech G, Razer, Corsair, ASUS, SteelSeries, HyperX et OpenRGB.
 
 ## ⭐ Soutien
 
