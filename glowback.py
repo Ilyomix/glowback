@@ -11,6 +11,7 @@ Single file, zero dependencies, pure Python + Win32 (ctypes).
 
     glowback                 start the ambilight (each LED follows its own zone)
     glowback --mode average  one average color for all LEDs
+    glowback --mode music    the LEDs follow the sound the PC plays
     glowback --list          show detected LED devices and screens
     glowback --test          orientation test pattern
     glowback --stop          stop the running instance
@@ -18,6 +19,8 @@ Single file, zero dependencies, pure Python + Win32 (ctypes).
 https://github.com/Ilyomix/glowback  -  MIT License
 """
 import argparse
+import cmath
+import colorsys
 import ctypes
 import ctypes.wintypes as wt
 import json
@@ -29,10 +32,11 @@ import subprocess
 import sys
 import threading
 import time
+from array import array
 from ctypes import byref, sizeof
 from operator import itemgetter, mul
 
-__version__ = "0.5.0"
+__version__ = "0.6.0"
 
 if sys.platform != "win32":
     sys.exit("Glowback runs on Windows 10/11 (it drives HID LampArray / Dynamic Lighting devices).")
@@ -580,6 +584,10 @@ class ScreenGrabber:
         raw = ctypes.string_at(self.s2[3], self.gw * self.gh * 4)  # BGRA
         return raw[2::4], raw[1::4], raw[0::4]
 
+    def thumbnail(self):
+        """The last capture, 320 pixels wide, for the app's preview: (width, height, BGRA rows top-down)."""
+        return self.sw, self.sh, ctypes.string_at(self.s1[3], self.sw * self.sh * 4)
+
     def close(self):
         for dc, bmp, old, _ in (self.s1, self.s2):
             gdi32.SelectObject(dc, old)
@@ -727,6 +735,7 @@ class DxgiGrabber:
         self.factory, self.adapter, self.output, self.output1 = VP(), VP(), VP(), VP()
         self.device, self.ctx, self.dup = VP(), VP(), VP()
         self.mip, self.srv, self.staging = VP(), VP(), VP()
+        self.thumb_tex, self.thumb_size = VP(), None
         self.last, self.fmt = None, None
         try:
             self._open(monitor.device, grid_w)
@@ -839,8 +848,44 @@ class DxgiGrabber:
             self.last = (raw[0::4], raw[1::4], raw[2::4])
         return self.last
 
+    def thumbnail(self):
+        """The last frame, about 400 pixels wide (a level of the GPU's mip chain), for the app's preview:
+        (width, height, BGRA rows top-down), or None before the first frame."""
+        if not self.mip.value:
+            return None
+        target = 200 if self.hdr else 400  # HDR pixels are converted one by one here: fewer of them
+        lv = min(range(self.level + 1), key=lambda k: abs((self.w >> k) - target))
+        tw, th = max(1, self.w >> lv), max(1, self.h >> lv)
+        if self.thumb_size != (tw, th, self.fmt):
+            _release(self.thumb_tex)
+            sd = D3D11_TEXTURE2D_DESC(tw, th, 1, 1, self.fmt, 1, 0, 3, 0, 0x20000, 0)  # staging, CPU read
+            _hr(_call(self.device, 5, [ctypes.POINTER(D3D11_TEXTURE2D_DESC), VP, PVP], byref(sd), None,
+                      byref(self.thumb_tex)), "CreateTexture2D")
+            self.thumb_size = (tw, th, self.fmt)
+        _call(self.ctx, 46, [VP, wt.UINT, wt.UINT, wt.UINT, wt.UINT, VP, wt.UINT, VP], self.thumb_tex, 0, 0, 0, 0,
+              self.mip, lv, None, restype=None)  # CopySubresourceRegion
+        m = D3D11_MAPPED_SUBRESOURCE()
+        _hr(_call(self.ctx, 14, [VP, wt.UINT, wt.UINT, wt.UINT, ctypes.POINTER(D3D11_MAPPED_SUBRESOURCE)],
+                  self.thumb_tex, 0, 1, 0, byref(m)), "Map")
+        try:
+            row = tw * (8 if self.hdr else 4)
+            raw = b"".join(ctypes.string_at(m.pData + y * m.RowPitch, row) for y in range(th))
+        finally:
+            _call(self.ctx, 15, [VP, wt.UINT], self.thumb_tex, 0, restype=None)  # Unmap
+        if self.hdr:
+            vals = struct.unpack(f"<{tw * th * 4}e", raw)
+            s, lut, out = 4095.0 / self.hdr_white, SRGB_LUT, bytearray(tw * th * 4)
+            for dst, src in ((0, 2), (1, 1), (2, 0)):  # BGRA from RGBA
+                out[dst::4] = bytes(lut[min(4095, int(v * s))] if v > 0.0 else 0 for v in vals[src::4])
+            raw = bytes(out)
+        elif not self.bgr:  # RGBA -> BGRA, as GDI+ wants it
+            out = bytearray(raw)
+            out[0::4], out[2::4] = raw[2::4], raw[0::4]
+            raw = bytes(out)
+        return tw, th, raw
+
     def close(self):
-        for p in (self.staging, self.srv, self.mip, self.dup, self.output1, self.output, self.adapter,
+        for p in (self.thumb_tex, self.staging, self.srv, self.mip, self.dup, self.output1, self.output, self.adapter,
                   self.ctx, self.device, self.factory):
             try:
                 _release(p)
@@ -953,6 +998,427 @@ def crop(R, G, B, gw, box):
     l, t, r, b = box
     rows = range(t, b)
     return tuple(b"".join(ch[y * gw + l:y * gw + r] for y in rows) for ch in (R, G, B))
+
+
+# =============================================================================
+# Looks: what the LEDs show. The screen (each LED its own zone, or one average color), one color, a gradient
+# (still or flowing), or the music the PC plays. Profiles (night, apps) can switch to another look.
+# =============================================================================
+MODES = ("zones", "average", "color", "gradient", "music")
+SCREEN_MODES = ("zones", "average")
+LOOK_MODES = MODES + ("device", "off")  # device: the LEDs' own effect; off: the LEDs stay dark
+MUSIC_STYLES = ("pulse", "spectrum", "wave")
+MUSIC_PALETTES = ("rainbow", "screen", "color", "gradient")
+SWATCHES = (("red", 0xFF3030), ("orange", 0xFF8000), ("yellow", 0xFFD60A), ("green", 0x28FF6E), ("cyan", 0x00E6FF),
+            ("blue", 0x2864FF), ("purple", 0x8B6CFF), ("pink", 0xFF3CBE), ("warm", 0xFFAA5A), ("white", 0xFFFFFF))
+GRADIENTS = (("sunset", (0xFF326E, 0xFF9628, 0xFFDC3C)), ("ocean", (0x00DCFF, 0x2846FF)),
+             ("aurora", (0x28FF96, 0x00AAFF, 0x8C64FF)), ("neon", (0xFF28D2, 0x643CFF)),
+             ("ember", (0xFF2800, 0xFF9600)), ("forest", (0xA0FF50, 0x00FF96)))
+DEFAULT_COLOR, DEFAULT_GRADIENT = 0x8B6CFF, GRADIENTS[0][1]
+
+
+def hex_color(value, default=None):
+    """'#FF8800', 'ff8800', 'f80' or 0xFF8800 -> 0xFF8800; anything else -> default."""
+    if isinstance(value, int) and not isinstance(value, bool) and 0 <= value <= 0xFFFFFF:
+        return value
+    if isinstance(value, str):
+        v = value.strip().lstrip("#")
+        if len(v) == 3:
+            v = "".join(c * 2 for c in v)
+        if len(v) == 6:
+            try:
+                return int(v, 16)
+            except ValueError:
+                pass
+    return default
+
+
+def color_hex(c):
+    return f"#{c:06X}"
+
+
+def rgb(c):
+    return (c >> 16) & 255, (c >> 8) & 255, c & 255
+
+
+def hsv_color(h, s, v=1.0):
+    """Hue 0..360, saturation and value 0..1 -> 0xRRGGBB."""
+    r, g, b = colorsys.hsv_to_rgb((h % 360.0) / 360.0, min(1.0, max(0.0, s)), min(1.0, max(0.0, v)))
+    return (round(r * 255) << 16) | (round(g * 255) << 8) | round(b * 255)
+
+
+def color_hsv(c):
+    h, s, v = colorsys.rgb_to_hsv(*(x / 255.0 for x in rgb(c)))
+    return h * 360.0, s, v
+
+
+def clean_stops(stops):
+    """A gradient: 2 to 4 colors (a list, or "#ff0080,#7928ca"), as a tuple of 0xRRGGBB; else None."""
+    if isinstance(stops, str):
+        stops = stops.split(",")
+    if not isinstance(stops, (list, tuple)):
+        return None
+    out = [c for c in map(hex_color, stops) if c is not None][:4]
+    return tuple(out) if len(out) >= 2 else None
+
+
+def gradient_at(stops, t):
+    """Color (0..255 floats) at t (0..1) along evenly spaced stops, mixed in linear light: no muddy middle."""
+    n = len(stops) - 1
+    t = min(1.0, max(0.0, t)) * n
+    i = min(int(t), n - 1)
+    f = t - i
+    return tuple(math.sqrt(a * a * (1 - f) + b * b * f) for a, b in zip(rgb(stops[i]), rgb(stops[i + 1])))
+
+
+def gradient_colors(uv, stops, flow, now):
+    """A gradient from the left of the screen to its right. Flowing, it slides sideways slowly and comes round."""
+    if not flow:
+        return [gradient_at(stops, u) for u, v in uv]
+    loop, phase = tuple(stops) + (stops[0],), (now / 24.0) % 1.0
+    return [gradient_at(loop, (u * 0.5 + phase) % 1.0) for u, v in uv]
+
+
+def clean_look(look):
+    """A profile's look: {"mode": one of LOOK_MODES, maybe "color", "gradient" or "style"}; what it leaves out
+    comes from the Ambient light page (its color, gradient, music). None: auto, the Ambient light page as it is."""
+    if not isinstance(look, dict) or look.get("mode") not in LOOK_MODES:
+        return None
+    out = {"mode": look["mode"]}
+    if out["mode"] == "color" and hex_color(look.get("color")) is not None:
+        out["color"] = color_hex(hex_color(look["color"]))
+    elif out["mode"] == "gradient" and clean_stops(look.get("gradient")):
+        out["gradient"] = [color_hex(c) for c in clean_stops(look["gradient"])]
+    elif out["mode"] == "music" and look.get("style") in MUSIC_STYLES:
+        out["style"] = look["style"]
+    return out
+
+
+def hhmm(minutes):
+    return f"{minutes // 60 % 24:02d}:{minutes % 60:02d}"
+
+
+def _minutes(text, default):
+    """'22:30' -> 1350 (minutes after midnight); 1350 stays 1350."""
+    if isinstance(text, int) and not isinstance(text, bool):
+        return text if 0 <= text < 1440 else default
+    try:
+        h, m = (int(x) for x in str(text).split(":"))
+    except ValueError:
+        return default
+    return h * 60 + m if 0 <= h < 24 and 0 <= m < 60 else default
+
+
+def clean_night(night):
+    """The night profile: {"on", "from", "to" (minutes after midnight), "brightness" (0-100), "look" (None: same)}."""
+    n = night if isinstance(night, dict) else {}
+    try:
+        bright = max(0, min(100, int(n.get("brightness", 40))))
+    except (TypeError, ValueError):
+        bright = 40
+    return {"on": bool(n.get("on", False)), "from": _minutes(n.get("from"), 22 * 60),
+            "to": _minutes(n.get("to"), 7 * 60), "brightness": bright, "look": clean_look(n.get("look"))}
+
+
+def night_json(night):
+    return {"on": night["on"], "from": hhmm(night["from"]), "to": hhmm(night["to"]),
+            "brightness": night["brightness"], "look": night["look"]}
+
+
+def night_now(night, now=None):
+    """Is it night by the night profile's hours? (22:00 to 07:00 runs over midnight.)"""
+    if not night["on"] or night["from"] == night["to"]:
+        return False
+    t = time.localtime(now)
+    m, a, b = t.tm_hour * 60 + t.tm_min, night["from"], night["to"]
+    return a <= m < b if a < b else (m >= a or m < b)
+
+
+# =============================================================================
+# Sound: the Music look follows what the PC plays (WASAPI loopback of the default output), analysed in memory
+# and never recorded; the "plays sound" condition reads the apps' peak meters.
+# =============================================================================
+ole32 = ctypes.WinDLL("ole32")
+_sig(ole32.CoInitializeEx, ctypes.c_long, VP, wt.DWORD)
+_sig(ole32.CoCreateInstance, ctypes.c_long, ctypes.POINTER(GUID), VP, wt.DWORD, ctypes.POINTER(GUID), PVP)
+_sig(ole32.CoTaskMemFree, None, VP)
+CLSID_MMDeviceEnumerator = _iid("bcde0395-e52f-467c-8e3d-c4579291692e")
+IID_IMMDeviceEnumerator = _iid("a95664d2-9614-4f35-a746-de8db63617e6")
+IID_IAudioClient = _iid("1cb9ad4c-dbfa-4c32-b178-c2f568a703b2")
+IID_IAudioCaptureClient = _iid("c8adbd64-e71e-48a0-a4de-185c395cd317")
+IID_IAudioSessionManager2 = _iid("77aa99a0-1bd6-484f-8bc7-2c654c9a9b6f")
+IID_IAudioSessionControl2 = _iid("bfb7ff88-7239-4fc9-8fa2-07c950be9c6d")
+IID_IAudioMeterInformation = _iid("c02216f6-8c67-4b5b-9d00-d008e73e0064")
+
+
+def com_init():
+    """COM in this thread (the capture loop), for the sound APIs."""
+    ole32.CoInitializeEx(None, 0)  # multithreaded; already set up another way: fine too
+
+
+def _method(ptr, index, *argtypes):
+    """COM method #index of `ptr`, made once for calls many times a second."""
+    vtbl = ctypes.cast(ptr, ctypes.POINTER(ctypes.POINTER(ctypes.c_void_p))).contents
+    return ctypes.WINFUNCTYPE(ctypes.c_long, VP, *argtypes)(vtbl[index])
+
+
+def default_output():
+    """The default sound output (an IMMDevice, to release) and its ID."""
+    enum, dev, sid = VP(), VP(), VP()
+    _hr(ole32.CoCreateInstance(byref(CLSID_MMDeviceEnumerator), None, 23, byref(IID_IMMDeviceEnumerator),
+                               byref(enum)), "MMDeviceEnumerator")
+    try:
+        _hr(_call(enum, 4, [ctypes.c_int, ctypes.c_int, PVP], 0, 0, byref(dev)), "GetDefaultAudioEndpoint")
+    finally:
+        _release(enum)
+    ident = ""
+    if _call(dev, 5, [PVP], byref(sid)) >= 0 and sid.value:  # GetId
+        ident = ctypes.wstring_at(sid.value)
+        ole32.CoTaskMemFree(sid)
+    return dev, ident
+
+
+def _activate(dev, iid):
+    out = VP()
+    _hr(_call(dev, 3, [ctypes.POINTER(GUID), wt.DWORD, VP, PVP], byref(iid), 23, None, byref(out)), "Activate")
+    return out
+
+
+class SoundCapture:
+    """What the default output plays, as mono samples at about 24 kHz. Loopback: no microphone, nothing saved."""
+
+    def __init__(self):
+        self.client, self.capture, self.dev, self.ident = VP(), VP(), VP(), ""
+        try:
+            self.dev, self.ident = default_output()
+            self.client = _activate(self.dev, IID_IAudioClient)
+            fmt = VP()
+            _hr(_call(self.client, 8, [PVP], byref(fmt)), "GetMixFormat")
+            try:
+                tag, self.channels, rate, _, self.align, bits, extra = struct.unpack(
+                    "<HHIIHHH", ctypes.string_at(fmt.value, 18))
+                if tag == 0xFFFE and extra >= 22:  # WAVEFORMATEXTENSIBLE: its sub-format's first number
+                    tag = struct.unpack("<I", ctypes.string_at(fmt.value + 24, 4))[0]
+                self.code = {(3, 32): "f", (1, 16): "h", (1, 32): "i"}.get((tag, bits))
+                if not self.code or not self.channels:
+                    raise OSError(f"sound format {tag}/{bits} bits not supported")
+                _hr(_call(self.client, 3, [ctypes.c_int, wt.DWORD, ctypes.c_longlong, ctypes.c_longlong, VP, VP],
+                          0, 0x00020000, 5_000_000, 0, fmt, None), "Initialize")  # shared, LOOPBACK, 0.5 s
+            finally:
+                ole32.CoTaskMemFree(fmt)
+            _hr(_call(self.client, 14, [ctypes.POINTER(GUID), PVP], byref(IID_IAudioCaptureClient),
+                      byref(self.capture)), "GetService")
+            self.dec = max(1, round(rate / 24000))
+            self.rate = rate / self.dec
+            self.scale = {"f": 1.0, "h": 1 / 32768, "i": 1 / 2147483648}[self.code] / (self.dec * self.channels)
+            self._next = _method(self.capture, 5, ctypes.POINTER(wt.UINT))
+            self._get = _method(self.capture, 3, PVP, ctypes.POINTER(wt.UINT), ctypes.POINTER(wt.DWORD), VP, VP)
+            self._done = _method(self.capture, 4, wt.UINT)
+            _hr(_call(self.client, 10, []), "Start")
+        except Exception:
+            self.close()
+            raise
+
+    def read(self):
+        """The samples played since the last call: mono, -1..1."""
+        out, n, data, frames, flags = [], wt.UINT(), VP(), wt.UINT(), wt.DWORD()
+        step, k = self.dec * self.channels, self.scale
+        for _ in range(64):
+            _hr(self._next(self.capture, byref(n)), "GetNextPacketSize")
+            if not n.value:
+                break
+            _hr(self._get(self.capture, byref(data), byref(frames), byref(flags), None, None), "GetBuffer")
+            count = frames.value
+            try:
+                if flags.value & 0x2 or not data.value:  # AUDCLNT_BUFFERFLAGS_SILENT
+                    out.extend([0.0] * (count // self.dec))
+                elif count:
+                    a = array(self.code)
+                    a.frombytes(ctypes.string_at(data.value, count * self.align))
+                    out.extend(sum(a[i:i + step]) * k for i in range(0, len(a) - step + 1, step))
+            finally:
+                self._done(self.capture, count)
+        return out
+
+    def close(self):
+        if self.client.value:
+            try:
+                _call(self.client, 11, [])  # Stop
+            except OSError:
+                pass
+        for p in (self.capture, self.client, self.dev):
+            _release(p)
+
+
+def _fft(x, tw):
+    """Radix-2 FFT of a list whose length is a power of 2, with the twiddles tw[size]: plain Python."""
+    n = len(x)
+    if n == 2:
+        return [x[0] + x[1], x[0] - x[1]]
+    even, odd = _fft(x[0::2], tw), _fft(x[1::2], tw)
+    t = [w * o for w, o in zip(tw[n], odd)]
+    return [e + o for e, o in zip(even, t)] + [e - o for e, o in zip(even, t)]
+
+
+class MusicAnalyser:
+    """Loudness, beats and 14 frequency bands (0..1, bass first) of the sound, with an automatic gain."""
+    N = 512
+    EDGES = (40, 80, 120, 180, 260, 380, 550, 800, 1150, 1700, 2500, 3700, 5500, 8000, 12000)  # Hz
+
+    def __init__(self, rate):
+        n = self.N
+        self.window = [(0.5 - 0.5 * math.cos(2 * math.pi * i / (n - 1))) * 4.0 / n for i in range(n)]  # Hann
+        self.tw, size = {}, n
+        while size > 2:
+            self.tw[size] = [cmath.exp(-2j * math.pi * k / size) for k in range(size // 2)]
+            size //= 2
+        bins = [max(1, min(n // 2, round(f * n / rate))) for f in self.EDGES]
+        self.bands = [(a, max(a + 1, b)) for a, b in zip(bins, bins[1:])]
+        self.rate, self.buf = rate, [0.0] * n
+        self.level = [0.0] * len(self.bands)  # what the LEDs show, per band
+        self.peak = [1e-3] * len(self.bands)  # recent loudest, per band: the automatic gain
+        self.loud, self.loud_peak, self.pulse = 0.0, 1e-3, 0.0
+        self.bass_avg, self.last_beat, self.beats = 0.0, -1.0, 0
+        self.quiet, self.silent = 9.0, True
+        self.waves = []  # (start, strength) of the light waves sent by the beats
+
+    def update(self, samples, dt, sensitivity=50, now=None):
+        now = time.monotonic() if now is None else now
+        n = self.N
+        if not samples:  # loopback gets nothing while nothing plays: that is silence
+            samples = [0.0] * min(n, int(self.rate * dt))
+        self.buf = (self.buf + samples)[-n:]
+        spec = _fft([s * w for s, w in zip(self.buf, self.window)], self.tw)
+        power = [c.real * c.real + c.imag * c.imag for c in spec[:n // 2 + 1]]
+        amps = [math.sqrt(sum(power[a:b]) / (b - a)) for a, b in self.bands]
+        rms = math.sqrt(sum(s * s for s in self.buf) / n)
+        self.quiet = self.quiet + dt if rms < 3e-4 else 0.0
+        self.silent = self.quiet > 1.5
+        gain = 2.0 ** ((sensitivity - 50) / 25.0)
+        fall = math.exp(-dt / 6.0)  # the gain follows the music's level within a few seconds
+        attack, release = 1 - math.exp(-dt / 0.025), 1 - math.exp(-dt / 0.16)
+        self.peak = [max(a, p * fall, 1e-6) for a, p in zip(amps, self.peak)]
+        ref = max(self.peak)
+        for i, a in enumerate(amps):
+            v = min(1.0, (a / max(self.peak[i], ref * 0.15, 3e-3) * gain) ** 1.5)
+            self.level[i] += (v - self.level[i]) * (attack if v > self.level[i] else release)
+        self.loud_peak = max(rms, self.loud_peak * fall, 1e-6)
+        v = min(1.0, (rms / max(self.loud_peak, 3e-3) * gain) ** 1.5)
+        self.loud += (v - self.loud) * (attack if v > self.loud else release)
+        bass, bass_peak = sum(amps[:3]) / 3, max(self.peak[:3])  # beats: the bass jumps above its recent level
+        self.bass_avg += (bass - self.bass_avg) * (1 - math.exp(-dt / 0.45))
+        if bass > self.bass_avg * 1.4 and bass > bass_peak * 0.35 and bass > 3e-3 and now - self.last_beat > 0.22:
+            self.last_beat, self.pulse, self.beats = now, 1.0, self.beats + 1
+            self.waves = self.waves[-5:] + [(now, min(1.0, 0.55 + 0.45 * bass / bass_peak))]
+        else:
+            self.pulse *= math.exp(-dt / 0.18)
+        self.waves = [w for w in self.waves if now - w[0] < 1.2]
+
+
+def music_geometry(uv):
+    """Per LED, for the music: (f, ring). f: 0 = bass at the bottom middle, 1 = treble at the top middle (one row
+    of LEDs: bass in the middle, treble at the ends); ring: where it sits around the screen, 0..1."""
+    flat = not uv or max(v for u, v in uv) - min(v for u, v in uv) < 0.15
+    geo = []
+    for u, v in uv:
+        dx, dy = u - 0.5, v - 0.5
+        f = min(1.0, abs(dx) * 2) if flat else math.atan2(abs(dx), dy) / math.pi
+        geo.append((f, (math.atan2(dy, dx) / (2 * math.pi) + 0.25) % 1.0))
+    return geo
+
+
+def rainbow_colors(geo, style, now):
+    """The Music look's own colors: bass red to treble violet for the spectrum, else a rainbow turning slowly."""
+    if style == "spectrum":
+        return [tuple(255 * x for x in colorsys.hsv_to_rgb(f * 0.75, 1, 1)) for f, ring in geo]
+    return [tuple(255 * x for x in colorsys.hsv_to_rgb((ring + now / 30.0) % 1.0, 1, 1)) for f, ring in geo]
+
+
+def music_colors(geo, an, style, colors, brightness, now):
+    """LED colors of the Music look: each LED's color (0..255 floats) lit by the sound, at `brightness` (0..1)."""
+    lv, nb, out = an.level, len(an.level), []
+    pulse = min(1.0, 0.08 + 0.5 * an.loud + 0.55 * an.pulse)
+    for (f, ring), c in zip(geo, colors):
+        if style == "spectrum":
+            x = f * (nb - 1)
+            j = min(int(x), nb - 2)
+            k = lv[j] + (lv[j + 1] - lv[j]) * (x - j)
+        elif style == "wave":  # beats send light from the bottom middle up both sides
+            k = 0.05 + 0.25 * an.loud
+            for t0, s in an.waves:
+                age = now - t0
+                d = f - age * 1.4
+                k += s * math.exp(-d * d / 0.02) * (1 - age / 1.2)
+        else:
+            k = pulse
+        k = min(1.0, k) * brightness
+        out.append((c[0] * k, c[1] * k, c[2] * k))
+    return out
+
+
+class SoundApps:
+    """Which apps play sound now: their sessions' peak meters on the default output (for "plays sound")."""
+
+    def __init__(self):
+        self.mgr, self.opened, self.heard = VP(), -99.0, {}  # heard: process ID -> last time it played sound
+
+    def pids(self, hold=2.0):
+        """Processes that played sound in the last `hold` seconds."""
+        now = time.monotonic()
+        try:
+            if now - self.opened > 5:  # follow the default output (headphones plugged in...)
+                self.opened = now
+                dev, _ = default_output()
+                try:
+                    mgr = _activate(dev, IID_IAudioSessionManager2)
+                finally:
+                    _release(dev)
+                _release(self.mgr)
+                self.mgr = mgr
+            en = VP()
+            _hr(_call(self.mgr, 5, [PVP], byref(en)), "GetSessionEnumerator")
+            try:
+                count = ctypes.c_int()
+                _call(en, 3, [ctypes.POINTER(ctypes.c_int)], byref(count))
+                for i in range(count.value):
+                    ctl = VP()
+                    if _call(en, 4, [ctypes.c_int, PVP], i, byref(ctl)) < 0:
+                        continue
+                    try:
+                        self._session(ctl, now)
+                    except OSError:
+                        pass
+                    finally:
+                        _release(ctl)
+            finally:
+                _release(en)
+        except OSError:
+            _release(self.mgr)
+            self.opened = now - 4  # no output, or it went away: look again in a second
+        self.heard = {pid: t for pid, t in self.heard.items() if now - t < hold}
+        return set(self.heard)
+
+    def _session(self, ctl, now):
+        state, peak, pid = ctypes.c_int(), ctypes.c_float(), wt.DWORD()
+        _call(ctl, 3, [ctypes.POINTER(ctypes.c_int)], byref(state))
+        if state.value != 1:  # AudioSessionStateActive
+            return
+        meter = _qi(ctl, IID_IAudioMeterInformation)
+        try:
+            _call(meter, 3, [ctypes.POINTER(ctypes.c_float)], byref(peak))
+        finally:
+            _release(meter)
+        if peak.value > 0.003:
+            c2 = _qi(ctl, IID_IAudioSessionControl2)
+            try:
+                _call(c2, 14, [ctypes.POINTER(wt.DWORD)], byref(pid))
+            finally:
+                _release(c2)
+            if pid.value:
+                self.heard[pid.value] = now
+
+    def close(self):
+        _release(self.mgr)
 
 
 # =============================================================================
@@ -1342,53 +1808,145 @@ class Output:
         self.cand, self.cand_since = None, 0.0
         self.wb = (1.0, 1.0, 1.0)  # white balance multipliers (glowback --calibrate)
         self.uv = []  # lamp positions 0..1, for the app's live preview
+        self.geo = None  # where each LED sits for the Music look
 
 
 class State:
-    """Live settings shared between the capture loop and the tray icon."""
+    """Live settings shared between the capture loop, the tray icon, the app and Home Assistant."""
 
     def __init__(self, args, enabled=True):
         saved = load_settings()
         self.enabled = enabled
-        self.mode = args.mode
+        self.mode = args.mode if args.mode in MODES else "zones"
         self.brightness = max(0.0, min(100.0, float(args.brightness)))
+        self.color = hex_color(getattr(args, "color", None), hex_color(saved.get("color"), DEFAULT_COLOR))
+        self.gradient = (clean_stops(getattr(args, "gradient", None)) or clean_stops(saved.get("gradient"))
+                         or DEFAULT_GRADIENT)
+        self.flow = bool(saved.get("flow", True))
+        music = saved.get("music") if isinstance(saved.get("music"), dict) else {}
+        self.music_style = music.get("style") if music.get("style") in MUSIC_STYLES else "pulse"
+        self.music_palette = music.get("palette") if music.get("palette") in MUSIC_PALETTES else "rainbow"
+        try:
+            self.sensitivity = max(0, min(100, int(music.get("sensitivity", 50))))
+        except (TypeError, ValueError):
+            self.sensitivity = 50
         self.check_updates = bool(saved.get("check_updates", True))
         self.leds = 0              # LEDs currently driven (shown in the tray menu)
         self.new_version = None    # newer version found on GitHub (not `update`: that is the method below)
         self.version = 0
-        self.rules = clean_rules(saved.get("sync_when"))  # sync conditions; none = always follow the screen
-        self.waiting, self.rule_hit = False, None  # no condition holds: the LEDs show their own effect
+        self.rules = clean_rules(saved.get("sync_when"))  # apps' profiles: a condition, maybe a look
+        self.otherwise = saved.get("otherwise")  # when no app's condition holds: auto, device or off
+        if self.otherwise not in ("auto", "device", "off"):  # 0.5.0: conditions meant "follow the screen only then"
+            self.otherwise = "device" if self.rules else "auto"
+            save_settings({"otherwise": self.otherwise})
+        self.night = clean_night(saved.get("night"))
         self.screens = []          # names of the screens the LEDs follow
         self.preview = []          # [(lamp positions 0..1, colors)] per device, for the app's live preview
+        self.thumb, self.thumb_want = None, -99.0  # the LED screen's picture, while the app asks for it
+        self.sound = None          # Music look: "on" (something plays), "silent", or None (not listening)
         self.notify = lambda: None  # the tray: something shown in the app or the panel changed
+        self.rule_hit = None
+        self.active = self.resolve(None)
+        self.waiting = self.active["look"]["mode"] == "device"  # a profile hands the LEDs to their own effect
 
     def update(self, **kw):
         for k, v in kw.items():
             setattr(self, k, v)
         self.version += 1
-        saved = {"enabled": self.enabled, "mode": self.mode, "brightness": self.brightness}
+        saved = {"enabled": self.enabled, "mode": self.mode, "brightness": self.brightness,
+                 "color": color_hex(self.color), "gradient": [color_hex(c) for c in self.gradient], "flow": self.flow,
+                 "music": {"style": self.music_style, "palette": self.music_palette, "sensitivity": self.sensitivity}}
         if "check_updates" in kw:  # only when switched here: the installer and --check-updates also set it
             saved["check_updates"] = self.check_updates
         save_settings(saved)
+        self._activate(self.rule_hit)
         self.notify()
 
+    # ---- profiles: the night, the apps, and what to show the rest of the time
+    def base_look(self):
+        return {"mode": self.mode, "color": self.color, "gradient": self.gradient, "flow": self.flow,
+                "style": self.music_style, "palette": self.music_palette}
+
+    def full_look(self, look):
+        """A profile's look, completed with the Ambient light page's colors and music."""
+        out = self.base_look()
+        if look:
+            out["mode"] = look["mode"]
+            if "color" in look:
+                out["color"] = hex_color(look["color"], self.color)
+            if "gradient" in look:
+                out["gradient"] = clean_stops(look["gradient"]) or self.gradient
+            if "style" in look:
+                out["style"] = look["style"]
+        return out
+
+    def resolve(self, hit, night=None):
+        """What the LEDs show now: {"source": base, night, app or rest, "rule", "night", "look", "brightness"}."""
+        night = night_now(self.night) if night is None else night
+        look, bright, source = None, self.brightness, "base"
+        if night:
+            look, bright, source = self.night["look"], self.night["brightness"], "night"
+        if hit is not None:
+            source = "app"
+            if hit.get("look"):
+                look = hit["look"]
+        elif self.rules and self.otherwise != "auto":
+            look, source = {"mode": self.otherwise}, "rest"
+        return {"source": source, "rule": hit, "night": night, "look": self.full_look(look), "brightness": bright}
+
+    def _activate(self, rule):
+        active = self.resolve(rule)
+        changed = active != self.active or rule != self.rule_hit
+        self.active, self.rule_hit = active, rule
+        self.waiting = active["look"]["mode"] == "device"
+        return changed
+
+    def _same_hit(self):
+        """The rule that held, as it is now in the list (its look may have changed), or None."""
+        h = self.rule_hit
+        if h is None:
+            return None
+        return next((r for r in self.rules if (r["app"], r["when"], r["screen"]) == (h["app"], h["when"], h["screen"])),
+                    None)
+
     def set_rules(self, rules, save=True):
-        """New sync conditions (the app, or glowback --sync-when through settings.json)."""
+        """New apps' profiles (the app, or glowback --sync-when through settings.json)."""
         rules = clean_rules(rules)
         if save:
             save_settings({"sync_when": rules})
         if rules != self.rules:
             self.rules = rules
-            if not rules:
-                self.set_match(None)
+            self._activate(self._same_hit())
             self.notify()
 
+    def set_profiles(self, night=None, otherwise=None, save=True):
+        """The night profile, or what to show when no app's condition holds."""
+        if night is not None:
+            self.night = clean_night(night)
+        if otherwise in ("auto", "device", "off"):
+            self.otherwise = otherwise
+        if save:
+            save_settings({"night": night_json(self.night), "otherwise": self.otherwise})
+        self._activate(self.rule_hit)
+        self.notify()
+
     def set_match(self, rule):
-        """What the capture loop found: the condition that holds now, or None."""
-        waiting = bool(self.rules) and rule is None
-        if (waiting, rule) != (self.waiting, self.rule_hit):
-            self.waiting, self.rule_hit = waiting, rule
+        """What the capture loop found: the app's condition that holds now, or None. Also follows the clock."""
+        if self._activate(rule):
             self.notify()
+
+    def status(self):
+        """(text, dot): dot is "on", "off" (paused) or "none" (the LEDs' own effect, dark, no device)."""
+        mode = self.active["look"]["mode"]
+        if not self.enabled:
+            return tr("state_paused"), "off"
+        if mode == "device":
+            return tr("state_device"), "none"
+        if mode == "off":
+            return tr("state_dark"), "none"
+        if self.leds:
+            return tr("state_on", leds=self.leds), "on"
+        return tr("state_none"), "none"
 
 
 def make_grabber(monitor, args, failed):
@@ -1404,31 +1962,122 @@ def make_grabber(monitor, args, failed):
     return ScreenGrabber(monitor.rect, args.grid)
 
 
+def screen_targets(o, frame, args, shape, mode, t0):
+    """LED colors from the screen: each LED its zone, or one average color (a list of one)."""
+    (R, G, B), gw, gh = frame
+    m = o.monitor
+    # letterbox / pillarbox: follow the picture, not the black bars
+    box = (0, 0, gw, gh)
+    if args.letterbox == "on":
+        if o.box_grid != (gw, gh):
+            o.box, o.box_grid, o.cand = None, (gw, gh), None
+        cand = detect_bars(R, G, B, gw, gh) or o.box or box
+        if o.box is None:
+            o.box = cand
+        elif cand != o.box:
+            if cand != o.cand:
+                o.cand, o.cand_since = cand, t0
+            elif t0 - o.cand_since > 0.4:
+                o.box, o.cand = cand, None
+        box = o.box
+    cw, ch = box[2] - box[0], box[3] - box[1]
+    if (cw, ch) != (gw, gh):
+        R, G, B = crop(R, G, B, gw, box)
+    n = len(R)
+    avg = (sum(R) / n, sum(G) / n, sum(B) / n)
+    if mode == "average":
+        return [shape(*avg)]
+    key = (gw, gh, cw, ch)
+    weights = o.weights.get(key)
+    if weights is None:
+        sw, sh = m.size
+        aspect = (cw / gw * sw) / (ch / gh * sh)
+        pts = [edge_point(u, v) for u, v in lamp_uv(o.dev.lamps, args.mirror, args.flip)]
+        weights = o.weights[key] = build_weights(pts, cw, ch, aspect, args.radius)
+    bl = args.blend
+    targets = []
+    for wgt in weights:
+        if wgt is None:
+            targets.append(shape(*avg))
+            continue
+        get, w = wgt
+        r, gg, b = sumprod(get(R), w), sumprod(get(G), w), sumprod(get(B), w)
+        if bl:
+            r, gg, b = r + (avg[0] - r) * bl, gg + (avg[1] - gg) * bl, b + (avg[2] - b) * bl
+        targets.append(shape(r, gg, b))
+    return targets
+
+
+def describe(active):
+    """What the LEDs show and why, for the log."""
+    r, look = active["rule"], active["look"]["mode"]
+    why = {"app": f"{(r or {}).get('app') or 'any app'} {(r or {}).get('when', '')}", "night": "night profile",
+           "rest": "no app's condition holds", "base": "Ambient light settings"}[active["source"]]
+    return f"{why}: {look}"
+
+
 def run(args, stop, state=None):
     state = state or State(args)
+    com_init()
     outputs, grabbers, dxgi_failed = {}, {}, set()
     period = 1.0 / max(1.0, args.fps)
     next_scan = next_keep = 0.0
     monitors = []
     frames, t_stat = 0, time.perf_counter()
     t_prev = time.perf_counter()
-    warned = paused = False
-    seen, shape = -1, None
-    watch, rule_t, file_t, file_mtime = AppWatch(), 0.0, 0.0, None
+    warned, held, seen, shapes = False, None, -1, {}
+    watch, sound_apps, rule_t, file_t, file_mtime = AppWatch(), SoundApps(), 0.0, 0.0, None
     rule_monitors, rule_monitors_t = [], -99.0
     led_screens = load_settings().get("led_screens") or []  # the screens the LEDs followed last time
+    music, music_t, music_retry, music_err = None, 0.0, 0.0, None  # listening while a Music look shows
+    last_look, fade_until, thumb_t = None, 0.0, 0.0
+
+    def shaper(b):
+        if b not in shapes:
+            if len(shapes) > 8:
+                shapes.clear()
+            shapes[b] = make_shaper(args.saturation, args.gamma, b, args.boost)
+        return shapes[b]
+
+    def grabber(m):
+        g = grabbers.get(m.rect)
+        if g is None:
+            g = grabbers[m.rect] = make_grabber(m, args, dxgi_failed)
+            log(f"  capture: {g.kind}, {g.gw}x{g.gh} grid")
+        return g
+
+    def take_thumb(m=None):
+        """The LED screen's picture for the app's preview (it asks while it shows it)."""
+        nonlocal rule_monitors, rule_monitors_t
+        if m is None:
+            m = next((o.monitor for o in outputs.values() if o.monitor), None)
+        if m is None:
+            if not monitors and time.perf_counter() - rule_monitors_t > 5:
+                rule_monitors, rule_monitors_t = list_monitors(), time.perf_counter()
+            ms = monitors or rule_monitors
+            m = (next((x for x in ms if (x.name or x.device) in led_screens), None)
+                 or next((x for x in ms if x.primary), None))
+        if m is None:
+            return
+        try:
+            g = grabber(m)
+            g.grab()
+            state.thumb = g.thumbnail()
+        except OSError as e:
+            log(f"  capture restarted ({e})")
+            grabbers.pop(m.rect).close()
+
     try:
         while True:
             t0 = time.perf_counter()
             dt, t_prev = t0 - t_prev, t0
             if state.version != seen:
                 seen = state.version
-                shape = make_shaper(args.saturation, args.gamma, state.brightness / 100.0, args.boost)
                 for o in outputs.values():
                     o.last = None
 
-            # ---- sync conditions (the app's "When to sync" page, glowback --sync-when), checked 4 times a second
-            if t0 >= file_t:  # changes made from the command line land in settings.json
+            # ---- profiles changed from the command line (glowback --sync-when): they land in settings.json
+            if t0 >= file_t:
                 file_t = t0 + 2
                 try:
                     mtime = os.stat(SETTINGS_PATH).st_mtime
@@ -1436,41 +2085,57 @@ def run(args, stop, state=None):
                     mtime = None
                 if mtime != file_mtime:
                     file_mtime = mtime
-                    state.set_rules(load_settings().get("sync_when"), save=False)
-            if state.enabled and state.rules and t0 >= rule_t:
-                rule_t = t0 + 0.25
-                if t0 - rule_monitors_t > 5:
-                    rule_monitors, rule_monitors_t = list_monitors(), t0
-                leds = {o.monitor.device for o in outputs.values() if o.monitor}
-                if not leds:  # not connected yet: the screens the LEDs followed last time, else the primary one
-                    leds = {m.device for m in rule_monitors if (m.name or m.device) in led_screens}
-                    leds = leds or {m.device for m in rule_monitors if m.primary}
-                state.set_match(conditions_met(state.rules, leds, rule_monitors, watch))
-            elif not state.rules and state.waiting:
-                state.set_match(None)
+                    saved = load_settings()
+                    state.set_rules(saved.get("sync_when"), save=False)
+                    if saved.get("otherwise") != state.otherwise or clean_night(saved.get("night")) != state.night:
+                        if "night" in saved or "otherwise" in saved:
+                            state.set_profiles(clean_night(saved.get("night")), saved.get("otherwise"), save=False)
 
-            # ---- paused from the tray, or no sync condition holds: the LEDs go back to the device's own effect
-            if not state.enabled or state.waiting:
-                if not paused:
-                    paused = True
+            # ---- profiles, 4 times a second: the night's hours, the apps' conditions, and what to show then
+            if t0 >= rule_t:
+                rule_t = t0 + 0.25
+                hit = None
+                if state.enabled and state.rules:
+                    if t0 - rule_monitors_t > 5:
+                        rule_monitors, rule_monitors_t = list_monitors(), t0
+                    leds = {o.monitor.device for o in outputs.values() if o.monitor}
+                    if not leds:  # not connected yet: the screens the LEDs followed last time, else the primary one
+                        leds = {m.device for m in rule_monitors if (m.name or m.device) in led_screens}
+                        leds = leds or {m.device for m in rule_monitors if m.primary}
+                    hit = conditions_met(state.rules, leds, rule_monitors, watch, sound_apps)
+                state.set_match(hit)
+            act = state.active
+            look = act["look"]
+            mode = look["mode"]
+            want_thumb = time.monotonic() - state.thumb_want < 1.5
+            thumb_due = want_thumb and t0 >= thumb_t
+            if thumb_due:
+                thumb_t = t0 + 0.08  # about 12 pictures a second for the preview
+
+            # ---- paused, or a profile hands the LEDs back to the device's own effect
+            hold = "paused" if not state.enabled else "device" if mode == "device" else None
+            if hold:
+                if held != hold:
+                    held = hold
                     for o in outputs.values():
                         try:
                             o.dev.set_autonomous(True)
                         except OSError:
                             pass
                     state.preview = []
-                    log("Paused: LEDs handed back to the device." if not state.enabled else
-                        "No sync condition holds: LEDs handed back to the device.")
-                if stop.wait(0.25):
+                    log("Paused: LEDs handed back to the device." if hold == "paused" else
+                        f"{describe(act)}: LEDs handed back to the device.")
+                if thumb_due:
+                    take_thumb()
+                if stop.wait(0.08 if want_thumb else 0.25):
                     break
                 continue
-            if paused:
-                paused = False
+            if held:
+                held = None
                 next_keep = 0.0
                 for o in outputs.values():
                     o.smooth = o.last = None
-                hit = state.rule_hit
-                log(f"Resumed: {hit['app'] or 'any app'} {hit['when']}." if hit else "Resumed.")
+                log(f"Resumed: {describe(act)}.")
 
             # ---- (re)scan devices and screens: hot-plug, monitor power cycles, resolution changes
             if t0 >= next_scan:
@@ -1518,7 +2183,49 @@ def run(args, stop, state=None):
                     log("Waiting for a Dynamic Lighting (HID LampArray) device... (glowback --list to check)")
                     warned = True
 
+            # ---- the Music look listens to what the PC plays; 10 seconds after it, Glowback stops listening
+            an = None
+            if mode == "music":
+                music_t = t0
+                if music is None and t0 >= music_retry:
+                    try:
+                        music = SoundCapture()
+                        music.an, music.checked = MusicAnalyser(music.rate), t0
+                        log(f"Music: listening to what the PC plays ({music.rate * music.dec:g} Hz)")
+                    except OSError as e:
+                        music, music_retry = None, t0 + 5
+                        if str(e) != music_err:  # said once, not every 5 seconds
+                            music_err = str(e)
+                            log(f"Music: cannot listen to the sound ({e})")
+                if music is not None:
+                    try:
+                        samples = music.read()
+                        if t0 - music.checked > 3:  # the default output changed (headphones...): follow it
+                            music.checked = t0
+                            dev, ident = default_output()
+                            _release(dev)
+                            if ident != music.ident:
+                                raise OSError("the default output changed")
+                        music.an.update(samples, dt, state.sensitivity)
+                        an = music.an
+                    except OSError as e:
+                        log(f"Music: listening again ({e})")
+                        music.close()
+                        music, music_retry = None, t0 + 1
+                sound = "on" if an is not None and not an.silent else "silent"
+                if sound != state.sound:
+                    state.sound = sound
+                    state.notify()
+            elif music is not None and t0 - music_t > 10:
+                music.close()
+                music, state.sound = None, None
+
             # ---- one frame
+            if look != last_look:  # another look (a profile, the app...): fade into it
+                fade_until = t0 + 0.8 if last_look is not None and last_look["mode"] != look["mode"] else fade_until
+                last_look = look
+            b = act["brightness"] / 100.0
+            need_screen = mode in SCREEN_MODES or (mode == "music" and look["palette"] == "screen")
             keep = t0 >= next_keep
             if keep:
                 next_keep = t0 + 5
@@ -1527,73 +2234,66 @@ def run(args, stop, state=None):
                 m = o.monitor
                 if m is None:
                     continue
-                if m.rect not in frames_by_rect:
-                    g = grabbers.get(m.rect)
-                    if g is None:
-                        g = grabbers[m.rect] = make_grabber(m, args, dxgi_failed)
-                        log(f"  capture: {g.kind}, {g.gw}x{g.gh} grid")
-                    try:
-                        px = g.grab()
-                    except OSError as e:
-                        log(f"  capture restarted ({e})")
-                        grabbers.pop(m.rect).close()
-                        px = None
-                    frames_by_rect[m.rect] = (px, g.gw, g.gh) if px else None
-                frame = frames_by_rect[m.rect]
-                if frame is None:
-                    continue
-                (R, G, B), gw, gh = frame
+                frame = None
+                if need_screen or thumb_due:
+                    if m.rect not in frames_by_rect:
+                        g = grabber(m)
+                        try:
+                            px = g.grab()
+                            if thumb_due:
+                                state.thumb, thumb_due = g.thumbnail(), False
+                        except OSError as e:
+                            log(f"  capture restarted ({e})")
+                            grabbers.pop(m.rect).close()
+                            px = None
+                        frames_by_rect[m.rect] = (px, g.gw, g.gh) if px else None
+                    frame = frames_by_rect[m.rect]
+                n = len(o.dev.lamps)
+                if mode in SCREEN_MODES:
+                    if frame is None:
+                        continue
+                    targets = screen_targets(o, frame, args, shaper(b), mode, t0)
+                elif mode == "color":
+                    targets = [tuple(c * b for c in rgb(look["color"]))]
+                elif mode == "gradient":
+                    targets = [(r * b, g_ * b, bb * b) for r, g_, bb in gradient_colors(o.uv, look["gradient"],
+                                                                                      look["flow"], t0)]
+                elif mode == "music":
+                    if o.geo is None or len(o.geo) != len(o.uv):
+                        o.geo = music_geometry(o.uv)
+                    pal = look["palette"]
+                    if pal == "screen":
+                        colors = screen_targets(o, frame, args, shaper(1.0), "zones", t0) if frame else None
+                    elif pal == "color":
+                        colors = [rgb(look["color"])] * n
+                    elif pal == "gradient":
+                        colors = gradient_colors(o.uv, look["gradient"], look["flow"], t0)
+                    else:
+                        colors = rainbow_colors(o.geo, look["style"], t0)
+                    if an is None or not colors:
+                        targets = [(0.0, 0.0, 0.0)] * n
+                    else:
+                        targets = music_colors(o.geo, an, look["style"], colors, b, t0)
+                else:  # off: the LEDs stay dark
+                    targets = [(0.0, 0.0, 0.0)]
 
-                # letterbox / pillarbox: follow the picture, not the black bars
-                box = (0, 0, gw, gh)
-                if args.letterbox == "on":
-                    if o.box_grid != (gw, gh):
-                        o.box, o.box_grid, o.cand = None, (gw, gh), None
-                    cand = detect_bars(R, G, B, gw, gh) or o.box or box
-                    if o.box is None:
-                        o.box = cand
-                    elif cand != o.box:
-                        if cand != o.cand:
-                            o.cand, o.cand_since = cand, t0
-                        elif t0 - o.cand_since > 0.4:
-                            o.box, o.cand = cand, None
-                    box = o.box
-                cw, ch = box[2] - box[0], box[3] - box[1]
-                if (cw, ch) != (gw, gh):
-                    R, G, B = crop(R, G, B, gw, box)
-                n = len(R)
-                avg = (sum(R) / n, sum(G) / n, sum(B) / n)
-
-                if state.mode == "average":
-                    targets = [shape(*avg)]
-                else:
-                    key = (gw, gh, cw, ch)
-                    weights = o.weights.get(key)
-                    if weights is None:
-                        sw, sh = m.size
-                        aspect = (cw / gw * sw) / (ch / gh * sh)
-                        pts = [edge_point(u, v) for u, v in lamp_uv(o.dev.lamps, args.mirror, args.flip)]
-                        weights = o.weights[key] = build_weights(pts, cw, ch, aspect, args.radius)
-                    bl = args.blend
-                    targets = []
-                    for wgt in weights:
-                        if wgt is None:
-                            targets.append(shape(*avg))
-                            continue
-                        get, w = wgt
-                        r, gg, b = sumprod(get(R), w), sumprod(get(G), w), sumprod(get(B), w)
-                        if bl:
-                            r, gg, b = r + (avg[0] - r) * bl, gg + (avg[1] - gg) * bl, b + (avg[2] - b) * bl
-                        targets.append(shape(r, gg, b))
-
-                a = 1.0 - math.exp(-dt / args.smoothing) if args.smoothing > 0 else 1.0
+                tau = args.smoothing
+                if t0 < fade_until:
+                    tau = max(tau, 0.3)
+                elif mode == "music":
+                    tau = min(tau, 0.03)
+                a = 1.0 - math.exp(-dt / tau) if tau > 0 else 1.0
                 if o.smooth is None or len(o.smooth) != len(targets):
-                    o.smooth = [list(t) for t in targets]
-                else:
-                    for s, t in zip(o.smooth, targets):
-                        s[0] += (t[0] - s[0]) * a
-                        s[1] += (t[1] - s[1]) * a
-                        s[2] += (t[2] - s[2]) * a
+                    if o.smooth and len(targets) == 1:  # many colors -> one: fade from their average
+                        o.smooth = [[sum(s[i] for s in o.smooth) / len(o.smooth) for i in range(3)]]
+                    elif o.smooth and len(o.smooth) == 1:  # one color -> many: fade from it
+                        o.smooth = [list(o.smooth[0]) for _ in targets]
+                    else:
+                        o.smooth = [list(t) for t in targets]
+                for s, t in zip(o.smooth, targets):
+                    s[0] += (t[0] - s[0]) * a
+                    s[1] += (t[1] - s[1]) * a
+                    s[2] += (t[2] - s[2]) * a
                 wr, wg, wb = o.wb
                 out = [(min(255, max(0, round(s[0] * wr))), min(255, max(0, round(s[1] * wg))),
                         min(255, max(0, round(s[2] * wb)))) for s in o.smooth]
@@ -1612,8 +2312,12 @@ def run(args, stop, state=None):
                     del outputs[path]
                     state.leds = sum(len(x.dev.lamps) for x in outputs.values())
                     next_scan = min(next_scan, t0 + 2)
+            if thumb_due:  # no LED device on a screen: still show the screen's picture
+                take_thumb()
 
-            state.preview = [(o.uv, o.last) for o in outputs.values() if o.last and o.uv]  # the app's live preview
+            # the app's live preview: each LED's color (one color for all is spread to every LED)
+            state.preview = [(o.uv, o.last if len(o.last) == len(o.uv) else o.last[:1] * len(o.uv))
+                             for o in outputs.values() if o.last and o.uv]
             frames += 1
             if args.verbose and t0 - t_stat >= 2:
                 print(f"  {frames / (t0 - t_stat):5.1f} fps   frame {1000 * (time.perf_counter() - t0):4.1f} ms   "
@@ -1631,6 +2335,9 @@ def run(args, stop, state=None):
             o.dev.close()
         for g in grabbers.values():
             g.close()
+        if music is not None:
+            music.close()
+        sound_apps.close()
         log("Glowback stopped.")
 
 
@@ -1800,21 +2507,9 @@ STRINGS = {
         'nav_about': 'About',
         'app_quit': 'Quit Glowback',
         'app_background': 'Glowback keeps running in the background. Click its icon next to the clock to come back.',
-        'light_sub': 'The LEDs behind your screen follow the picture, live.',
         'mode_zones_desc': 'Each LED takes the colors of the picture right next to it.',
         'mode_average_desc': 'All the LEDs show the average color of the screen.',
-        'sync_when': 'When to sync',
-        'sync_sub': 'Glowback follows the screen all the time, or only while one of your conditions is met. The rest of the time, the LEDs show their own effect.',
-        'sync_always': 'Always',
-        'sync_one': '1 condition',
-        'sync_many': '{n} conditions',
-        'sync_now_on': 'Following the screen: {rule}',
-        'sync_now_waiting': 'No condition is met: the LEDs show their own effect.',
-        'sync_now_always': 'No condition: Glowback follows the screen all the time.',
         'sync_now_paused': 'The ambient light is paused.',
-        'sync_list': 'Conditions',
-        'sync_empty': 'No condition yet: Glowback follows the screen all the time.',
-        'sync_add_title': 'Add a condition',
         'sync_app': 'App',
         'sync_when_label': 'When',
         'sync_screen': 'Screen',
@@ -1829,10 +2524,7 @@ STRINGS = {
         'sync_screen_n': 'Screen {n}',
         'sync_add': 'Add',
         'sync_remove': 'Remove',
-        'sync_examples': 'For example: a video player in front, any app full screen on the LED screen, or a game launcher running.',
         'sync_programs': 'Programs',
-        'state_waiting': 'Waiting for a condition',
-        'tip_waiting': 'Glowback: waiting for a condition',
         'home_sub': 'Switch the ambient light from Home Assistant, its automations and your voice assistant.',
         'home_connected': 'Connected to {host}',
         'home_not_set': 'Not set up',
@@ -1841,9 +2533,6 @@ STRINGS = {
         'home_setup': 'Set up',
         'home_change': 'Change',
         'home_entities': 'In Home Assistant',
-        'home_light': 'Ambient light on/off, brightness and mode',
-        'home_leds': 'Number of LEDs Glowback drives',
-        'home_update': 'New versions, installed from Home Assistant',
         'home_voice': 'Voice assistants',
         'home_voice_text': 'Google Assistant and Alexa work through Home Assistant, Siri and the Home app through its HomeKit Bridge integration.',
         'settings_sub': 'Startup, updates and language.',
@@ -1864,6 +2553,89 @@ STRINGS = {
         'about_source': 'Source code and guide',
         'about_issue': 'Report a problem',
         'about_license': 'Free and open source, MIT license.',
+        'nav_profiles': 'Profiles',
+        'profiles_sub': 'Change the look with the time of day, the app in front or the sound that plays. The rest of the time, the Ambient light page applies.',
+        'light_sub': 'What the LEDs behind your screen show: the picture, a color, a gradient or your music.',
+        'mode_zones': 'Screen',
+        'mode_average': 'Average',
+        'mode_color': 'Color',
+        'mode_gradient': 'Gradient',
+        'mode_music': 'Music',
+        'color_hue': 'Hue',
+        'color_sat': 'Saturation',
+        'color_red': 'Red',
+        'color_orange': 'Orange',
+        'color_yellow': 'Yellow',
+        'color_green': 'Green',
+        'color_cyan': 'Cyan',
+        'color_blue': 'Blue',
+        'color_purple': 'Purple',
+        'color_pink': 'Pink',
+        'color_warm': 'Warm white',
+        'color_white': 'White',
+        'gradient_sunset': 'Sunset',
+        'gradient_ocean': 'Ocean',
+        'gradient_aurora': 'Aurora',
+        'gradient_neon': 'Neon',
+        'gradient_ember': 'Ember',
+        'gradient_forest': 'Forest',
+        'gradient_presets': 'Presets',
+        'gradient_flow': 'Flow',
+        'gradient_flow_desc': 'The gradient slides slowly across the LEDs',
+        'style_pulse': 'Pulse',
+        'style_spectrum': 'Spectrum',
+        'style_wave': 'Waves',
+        'style_pulse_desc': 'All the LEDs beat with the music.',
+        'style_spectrum_desc': 'Each LED follows its own notes: bass at the bottom, treble at the top.',
+        'style_wave_desc': 'Each beat sends a wave of light up both sides of the screen.',
+        'music_style': 'Style',
+        'music_colors': 'Colors',
+        'music_sensitivity': 'Sensitivity',
+        'music_on': 'The LEDs follow what your PC plays. Nothing is recorded.',
+        'music_silent': 'No sound right now: play some music.',
+        'palette_rainbow': 'Rainbow',
+        'palette_screen': "The screen's colors",
+        'palette_color': 'My color',
+        'palette_gradient': 'My gradient',
+        'now_base': 'No profile right now: the Ambient light page applies.',
+        'now_night': 'Night profile until {end}: {look}, brightness {brightness} %.',
+        'now_app': '{rule}: {look}.',
+        'now_rest': 'None of your apps: {look}.',
+        'night_title': 'Day and night',
+        'night_profile': 'Night profile',
+        'night_desc': 'From {start} to {end}, a softer light',
+        'night_hours': 'Hours',
+        'night_brightness': 'Brightness at night',
+        'night_look': 'Look at night',
+        'night_same': 'Same as the day',
+        'night_short': 'Night',
+        'apps_title': 'By app',
+        'apps_empty': 'No app yet: add one below.',
+        'apps_add': 'Add an app',
+        'apps_examples': 'For example: music while Spotify plays sound, the screen for games full screen, blue while Visual Studio Code is in front.',
+        'rest_title': 'The rest of the time',
+        'rest_desc': 'When none of these apps matches',
+        'look_label': 'Look',
+        'look_auto': 'Auto: the Ambient light page',
+        'look_auto_short': 'Auto',
+        'look_device': "LEDs' own effect",
+        'look_off': 'LEDs off',
+        'sync_playing': 'Plays sound',
+        'profiles_none': 'None',
+        'profiles_one': '1 profile',
+        'profiles_many': '{n} profiles',
+        'profiles_none_long': 'None: the settings above apply all the time',
+        'profiles_apps_one': '1 app',
+        'profiles_apps': '{n} apps',
+        'profiles_now': 'now {name}',
+        'state_device': "LEDs' own effect",
+        'state_dark': 'LEDs off',
+        'tip_device': 'Glowback: the LEDs show their own effect',
+        'home_leds_title': 'Number of LEDs',
+        'home_update_title': 'Updates',
+        'home_light': 'Turn it on or off, set its brightness, color and mode',
+        'home_leds': 'How many LEDs Glowback drives right now',
+        'home_update': 'New versions of Glowback, installed from Home Assistant',
     },
     'fr': {
         'update_downloading': 'Téléchargement de Glowback {version}…',
@@ -1945,21 +2717,9 @@ STRINGS = {
         'nav_about': 'À propos',
         'app_quit': 'Quitter Glowback',
         'app_background': "Glowback continue en arrière-plan. Cliquez sur son icône près de l'horloge pour revenir.",
-        'light_sub': "Les LED derrière votre écran suivent l'image, en direct.",
         'mode_zones_desc': "Chaque LED prend les couleurs de l'image juste à côté d'elle.",
         'mode_average_desc': "Toutes les LED affichent la couleur moyenne de l'écran.",
-        'sync_when': 'Quand synchroniser',
-        'sync_sub': "Glowback suit l'écran tout le temps, ou seulement quand une de vos conditions est remplie. Le reste du temps, les LED affichent leur propre effet.",
-        'sync_always': 'Toujours',
-        'sync_one': '1 condition',
-        'sync_many': '{n} conditions',
-        'sync_now_on': "Glowback suit l'écran : {rule}",
-        'sync_now_waiting': 'Aucune condition remplie : les LED affichent leur propre effet.',
-        'sync_now_always': "Aucune condition : Glowback suit l'écran tout le temps.",
         'sync_now_paused': "La lumière d'ambiance est en pause.",
-        'sync_list': 'Conditions',
-        'sync_empty': "Aucune condition pour l'instant : Glowback suit l'écran tout le temps.",
-        'sync_add_title': 'Ajouter une condition',
         'sync_app': 'App',
         'sync_when_label': 'Quand',
         'sync_screen': 'Écran',
@@ -1974,10 +2734,7 @@ STRINGS = {
         'sync_screen_n': 'Écran {n}',
         'sync_add': 'Ajouter',
         'sync_remove': 'Retirer',
-        'sync_examples': "Par exemple : un lecteur vidéo au premier plan, n'importe quelle app en plein écran sur l'écran des LED, ou un lanceur de jeux ouvert.",
         'sync_programs': 'Programmes',
-        'state_waiting': "En attente d'une condition",
-        'tip_waiting': "Glowback : en attente d'une condition",
         'home_sub': "Pilotez la lumière d'ambiance depuis Home Assistant, ses automatisations et votre assistant vocal.",
         'home_connected': 'Connecté à {host}',
         'home_not_set': 'Pas encore configuré',
@@ -1986,9 +2743,6 @@ STRINGS = {
         'home_setup': 'Configurer',
         'home_change': 'Modifier',
         'home_entities': 'Dans Home Assistant',
-        'home_light': "Lumière d'ambiance allumée ou éteinte, luminosité et mode",
-        'home_leds': 'Nombre de LED pilotées par Glowback',
-        'home_update': 'Nouvelles versions, installées depuis Home Assistant',
         'home_voice': 'Assistants vocaux',
         'home_voice_text': "Google Assistant et Alexa passent par Home Assistant, Siri et l'app Maison par son intégration HomeKit Bridge.",
         'settings_sub': 'Démarrage, mises à jour et langue.',
@@ -2009,6 +2763,89 @@ STRINGS = {
         'about_source': 'Code source et guide',
         'about_issue': 'Signaler un problème',
         'about_license': 'Libre et open source, licence MIT.',
+        'nav_profiles': 'Profils',
+        'profiles_sub': "Changez d'ambiance selon l'heure, l'app au premier plan ou le son qui joue. Le reste du temps, la page Lumière d'ambiance s'applique.",
+        'light_sub': "Ce que montrent les LED derrière votre écran : l'image, une couleur, un dégradé ou votre musique.",
+        'mode_zones': 'Écran',
+        'mode_average': 'Moyenne',
+        'mode_color': 'Couleur',
+        'mode_gradient': 'Dégradé',
+        'mode_music': 'Musique',
+        'color_hue': 'Teinte',
+        'color_sat': 'Saturation',
+        'color_red': 'Rouge',
+        'color_orange': 'Orange',
+        'color_yellow': 'Jaune',
+        'color_green': 'Vert',
+        'color_cyan': 'Cyan',
+        'color_blue': 'Bleu',
+        'color_purple': 'Violet',
+        'color_pink': 'Rose',
+        'color_warm': 'Blanc chaud',
+        'color_white': 'Blanc',
+        'gradient_sunset': 'Coucher de soleil',
+        'gradient_ocean': 'Océan',
+        'gradient_aurora': 'Aurore',
+        'gradient_neon': 'Néon',
+        'gradient_ember': 'Braise',
+        'gradient_forest': 'Forêt',
+        'gradient_presets': 'Modèles',
+        'gradient_flow': 'Défilement',
+        'gradient_flow_desc': 'Le dégradé glisse lentement sur les LED',
+        'style_pulse': 'Pulsation',
+        'style_spectrum': 'Spectre',
+        'style_wave': 'Vagues',
+        'style_pulse_desc': 'Toutes les LED battent au rythme de la musique.',
+        'style_spectrum_desc': 'Chaque LED suit ses notes : les basses en bas, les aigus en haut.',
+        'style_wave_desc': "Chaque temps fort envoie une vague de lumière de chaque côté de l'écran.",
+        'music_style': 'Style',
+        'music_colors': 'Couleurs',
+        'music_sensitivity': 'Sensibilité',
+        'music_on': "Les LED suivent ce que joue votre PC. Rien n'est enregistré.",
+        'music_silent': "Aucun son pour l'instant : lancez une musique.",
+        'palette_rainbow': 'Arc-en-ciel',
+        'palette_screen': "Couleurs de l'écran",
+        'palette_color': 'Ma couleur',
+        'palette_gradient': 'Mon dégradé',
+        'now_base': "Aucun profil en ce moment : la page Lumière d'ambiance s'applique.",
+        'now_night': "Profil de nuit jusqu'à {end} : {look}, luminosité {brightness} %.",
+        'now_app': '{rule} : {look}.',
+        'now_rest': 'Aucune de vos apps : {look}.',
+        'night_title': 'Jour et nuit',
+        'night_profile': 'Profil de nuit',
+        'night_desc': 'De {start} à {end}, une lumière plus douce',
+        'night_hours': 'Horaires',
+        'night_brightness': 'Luminosité la nuit',
+        'night_look': 'Ambiance la nuit',
+        'night_same': 'Comme le jour',
+        'night_short': 'Nuit',
+        'apps_title': 'Par app',
+        'apps_empty': "Aucune app pour l'instant : ajoutez-en une ci-dessous.",
+        'apps_add': 'Ajouter une app',
+        'apps_examples': "Par exemple : la musique quand Spotify joue du son, l'écran pour les jeux en plein écran, du bleu quand Visual Studio Code est au premier plan.",
+        'rest_title': 'Le reste du temps',
+        'rest_desc': 'Quand aucune de ces apps ne correspond',
+        'look_label': 'Ambiance',
+        'look_auto': "Auto : la page Lumière d'ambiance",
+        'look_auto_short': 'Auto',
+        'look_device': 'Effet des LED',
+        'look_off': 'LED éteintes',
+        'sync_playing': 'Joue du son',
+        'profiles_none': 'Aucun',
+        'profiles_one': '1 profil',
+        'profiles_many': '{n} profils',
+        'profiles_none_long': "Aucun : les réglages ci-dessus s'appliquent tout le temps",
+        'profiles_apps_one': '1 app',
+        'profiles_apps': '{n} apps',
+        'profiles_now': 'maintenant {name}',
+        'state_device': 'Effet des LED',
+        'state_dark': 'LED éteintes',
+        'tip_device': 'Glowback : les LED affichent leur propre effet',
+        'home_leds_title': 'Nombre de LED',
+        'home_update_title': 'Mises à jour',
+        'home_light': 'Allumez-la, éteignez-la, réglez sa luminosité, sa couleur et son mode',
+        'home_leds': 'Combien de LED Glowback pilote en ce moment',
+        'home_update': 'Les nouvelles versions de Glowback, installées depuis Home Assistant',
     },
     'es': {
         'update_downloading': 'Descargando Glowback {version}…',
@@ -2090,21 +2927,9 @@ STRINGS = {
         'nav_about': 'Acerca de',
         'app_quit': 'Salir de Glowback',
         'app_background': 'Glowback sigue funcionando en segundo plano. Haz clic en su icono junto al reloj para volver.',
-        'light_sub': 'Los LED detrás de tu pantalla siguen la imagen en directo.',
         'mode_zones_desc': 'Cada LED toma los colores de la imagen justo a su lado.',
         'mode_average_desc': 'Todos los LED muestran el color medio de la pantalla.',
-        'sync_when': 'Cuándo sincronizar',
-        'sync_sub': 'Glowback sigue la pantalla todo el tiempo, o solo mientras se cumpla una de tus condiciones. El resto del tiempo, los LED muestran su propio efecto.',
-        'sync_always': 'Siempre',
-        'sync_one': '1 condición',
-        'sync_many': '{n} condiciones',
-        'sync_now_on': 'Glowback sigue la pantalla: {rule}',
-        'sync_now_waiting': 'No se cumple ninguna condición: los LED muestran su propio efecto.',
-        'sync_now_always': 'Sin condiciones: Glowback sigue la pantalla todo el tiempo.',
         'sync_now_paused': 'La luz ambiental está en pausa.',
-        'sync_list': 'Condiciones',
-        'sync_empty': 'Aún no hay condiciones: Glowback sigue la pantalla todo el tiempo.',
-        'sync_add_title': 'Añadir una condición',
         'sync_app': 'App',
         'sync_when_label': 'Cuándo',
         'sync_screen': 'Pantalla',
@@ -2119,10 +2944,7 @@ STRINGS = {
         'sync_screen_n': 'Pantalla {n}',
         'sync_add': 'Añadir',
         'sync_remove': 'Quitar',
-        'sync_examples': 'Por ejemplo: un reproductor de vídeo en primer plano, cualquier app en pantalla completa en la pantalla de los LED, o un lanzador de juegos abierto.',
         'sync_programs': 'Programas',
-        'state_waiting': 'Esperando una condición',
-        'tip_waiting': 'Glowback: esperando una condición',
         'home_sub': 'Controla la luz ambiental desde Home Assistant, sus automatizaciones y tu asistente de voz.',
         'home_connected': 'Conectado a {host}',
         'home_not_set': 'Sin configurar',
@@ -2131,9 +2953,6 @@ STRINGS = {
         'home_setup': 'Configurar',
         'home_change': 'Cambiar',
         'home_entities': 'En Home Assistant',
-        'home_light': 'Luz ambiental encendida o apagada, brillo y modo',
-        'home_leds': 'Número de LED que controla Glowback',
-        'home_update': 'Nuevas versiones, instaladas desde Home Assistant',
         'home_voice': 'Asistentes de voz',
         'home_voice_text': 'Google Assistant y Alexa funcionan a través de Home Assistant, Siri y la app Casa con su integración HomeKit Bridge.',
         'settings_sub': 'Inicio, actualizaciones e idioma.',
@@ -2154,6 +2973,89 @@ STRINGS = {
         'about_source': 'Código fuente y guía',
         'about_issue': 'Informar de un problema',
         'about_license': 'Libre y de código abierto, licencia MIT.',
+        'nav_profiles': 'Perfiles',
+        'profiles_sub': 'Cambia el ambiente según la hora, la app en primer plano o el sonido que suena. El resto del tiempo se aplica la página Luz ambiental.',
+        'light_sub': 'Lo que muestran los LED detrás de tu pantalla: la imagen, un color, un degradado o tu música.',
+        'mode_zones': 'Pantalla',
+        'mode_average': 'Promedio',
+        'mode_color': 'Color',
+        'mode_gradient': 'Degradado',
+        'mode_music': 'Música',
+        'color_hue': 'Tono',
+        'color_sat': 'Saturación',
+        'color_red': 'Rojo',
+        'color_orange': 'Naranja',
+        'color_yellow': 'Amarillo',
+        'color_green': 'Verde',
+        'color_cyan': 'Cian',
+        'color_blue': 'Azul',
+        'color_purple': 'Violeta',
+        'color_pink': 'Rosa',
+        'color_warm': 'Blanco cálido',
+        'color_white': 'Blanco',
+        'gradient_sunset': 'Atardecer',
+        'gradient_ocean': 'Océano',
+        'gradient_aurora': 'Aurora',
+        'gradient_neon': 'Neón',
+        'gradient_ember': 'Brasa',
+        'gradient_forest': 'Bosque',
+        'gradient_presets': 'Predefinidos',
+        'gradient_flow': 'Movimiento',
+        'gradient_flow_desc': 'El degradado se desliza despacio por los LED',
+        'style_pulse': 'Pulso',
+        'style_spectrum': 'Espectro',
+        'style_wave': 'Ondas',
+        'style_pulse_desc': 'Todos los LED laten al ritmo de la música.',
+        'style_spectrum_desc': 'Cada LED sigue sus notas: graves abajo, agudos arriba.',
+        'style_wave_desc': 'Cada golpe envía una ola de luz por ambos lados de la pantalla.',
+        'music_style': 'Estilo',
+        'music_colors': 'Colores',
+        'music_sensitivity': 'Sensibilidad',
+        'music_on': 'Los LED siguen lo que suena en tu PC. No se graba nada.',
+        'music_silent': 'No hay sonido ahora: pon algo de música.',
+        'palette_rainbow': 'Arcoíris',
+        'palette_screen': 'Colores de la pantalla',
+        'palette_color': 'Mi color',
+        'palette_gradient': 'Mi degradado',
+        'now_base': 'Ningún perfil ahora: se aplica la página Luz ambiental.',
+        'now_night': 'Perfil nocturno hasta las {end}: {look}, brillo {brightness} %.',
+        'now_app': '{rule}: {look}.',
+        'now_rest': 'Ninguna de tus apps: {look}.',
+        'night_title': 'Día y noche',
+        'night_profile': 'Perfil nocturno',
+        'night_desc': 'De {start} a {end}, una luz más suave',
+        'night_hours': 'Horario',
+        'night_brightness': 'Brillo de noche',
+        'night_look': 'Ambiente de noche',
+        'night_same': 'Como de día',
+        'night_short': 'Noche',
+        'apps_title': 'Por app',
+        'apps_empty': 'Todavía no hay apps: añade una abajo.',
+        'apps_add': 'Añadir una app',
+        'apps_examples': 'Por ejemplo: la música cuando Spotify reproduce sonido, la pantalla para los juegos en pantalla completa, azul cuando Visual Studio Code está en primer plano.',
+        'rest_title': 'El resto del tiempo',
+        'rest_desc': 'Cuando ninguna de estas apps coincide',
+        'look_label': 'Ambiente',
+        'look_auto': 'Auto: la página Luz ambiental',
+        'look_auto_short': 'Auto',
+        'look_device': 'Efecto propio de los LED',
+        'look_off': 'LED apagados',
+        'sync_playing': 'Reproduce sonido',
+        'profiles_none': 'Ninguno',
+        'profiles_one': '1 perfil',
+        'profiles_many': '{n} perfiles',
+        'profiles_none_long': 'Ninguno: los ajustes de arriba se aplican siempre',
+        'profiles_apps_one': '1 app',
+        'profiles_apps': '{n} apps',
+        'profiles_now': 'ahora {name}',
+        'state_device': 'Efecto propio de los LED',
+        'state_dark': 'LED apagados',
+        'tip_device': 'Glowback: los LED muestran su propio efecto',
+        'home_leds_title': 'Número de LED',
+        'home_update_title': 'Actualizaciones',
+        'home_light': 'Enciéndela o apágala, ajusta su brillo, su color y su modo',
+        'home_leds': 'Cuántos LED controla Glowback ahora',
+        'home_update': 'Las nuevas versiones de Glowback, instaladas desde Home Assistant',
     },
     'de': {
         'update_downloading': 'Glowback {version} wird heruntergeladen …',
@@ -2235,21 +3137,9 @@ STRINGS = {
         'nav_about': 'Info',
         'app_quit': 'Glowback beenden',
         'app_background': 'Glowback läuft im Hintergrund weiter. Klicke auf das Symbol neben der Uhr, um zurückzukehren.',
-        'light_sub': 'Die LEDs hinter deinem Bildschirm folgen dem Bild, live.',
         'mode_zones_desc': 'Jede LED übernimmt die Farben des Bildes direkt neben ihr.',
         'mode_average_desc': 'Alle LEDs zeigen die Durchschnittsfarbe des Bildschirms.',
-        'sync_when': 'Wann synchronisieren',
-        'sync_sub': 'Glowback folgt dem Bildschirm immer oder nur, solange eine deiner Bedingungen erfüllt ist. Den Rest der Zeit zeigen die LEDs ihren eigenen Effekt.',
-        'sync_always': 'Immer',
-        'sync_one': '1 Bedingung',
-        'sync_many': '{n} Bedingungen',
-        'sync_now_on': 'Glowback folgt dem Bildschirm: {rule}',
-        'sync_now_waiting': 'Keine Bedingung erfüllt: Die LEDs zeigen ihren eigenen Effekt.',
-        'sync_now_always': 'Keine Bedingung: Glowback folgt dem Bildschirm immer.',
         'sync_now_paused': 'Das Umgebungslicht ist pausiert.',
-        'sync_list': 'Bedingungen',
-        'sync_empty': 'Noch keine Bedingung: Glowback folgt dem Bildschirm immer.',
-        'sync_add_title': 'Bedingung hinzufügen',
         'sync_app': 'App',
         'sync_when_label': 'Wann',
         'sync_screen': 'Bildschirm',
@@ -2264,10 +3154,7 @@ STRINGS = {
         'sync_screen_n': 'Bildschirm {n}',
         'sync_add': 'Hinzufügen',
         'sync_remove': 'Entfernen',
-        'sync_examples': 'Zum Beispiel: ein Videoplayer im Vordergrund, eine beliebige App im Vollbild auf dem LED-Bildschirm oder ein laufender Spiele-Launcher.',
         'sync_programs': 'Programme',
-        'state_waiting': 'Wartet auf eine Bedingung',
-        'tip_waiting': 'Glowback: wartet auf eine Bedingung',
         'home_sub': 'Steuere das Umgebungslicht aus Home Assistant, seinen Automationen und deinem Sprachassistenten.',
         'home_connected': 'Verbunden mit {host}',
         'home_not_set': 'Nicht eingerichtet',
@@ -2276,9 +3163,6 @@ STRINGS = {
         'home_setup': 'Einrichten',
         'home_change': 'Ändern',
         'home_entities': 'In Home Assistant',
-        'home_light': 'Umgebungslicht an/aus, Helligkeit und Modus',
-        'home_leds': 'Anzahl der LEDs, die Glowback steuert',
-        'home_update': 'Neue Versionen, aus Home Assistant installiert',
         'home_voice': 'Sprachassistenten',
         'home_voice_text': 'Google Assistant und Alexa funktionieren über Home Assistant, Siri und die Home-App über seine Integration HomeKit Bridge.',
         'settings_sub': 'Start, Updates und Sprache.',
@@ -2299,6 +3183,89 @@ STRINGS = {
         'about_source': 'Quellcode und Anleitung',
         'about_issue': 'Problem melden',
         'about_license': 'Frei und quelloffen, MIT-Lizenz.',
+        'nav_profiles': 'Profile',
+        'profiles_sub': 'Wechsle das Licht je nach Uhrzeit, App im Vordergrund oder laufendem Ton. Sonst gilt die Seite Umgebungslicht.',
+        'light_sub': 'Was die LEDs hinter deinem Bildschirm zeigen: das Bild, eine Farbe, einen Verlauf oder deine Musik.',
+        'mode_zones': 'Bildschirm',
+        'mode_average': 'Mittelwert',
+        'mode_color': 'Farbe',
+        'mode_gradient': 'Verlauf',
+        'mode_music': 'Musik',
+        'color_hue': 'Farbton',
+        'color_sat': 'Sättigung',
+        'color_red': 'Rot',
+        'color_orange': 'Orange',
+        'color_yellow': 'Gelb',
+        'color_green': 'Grün',
+        'color_cyan': 'Cyan',
+        'color_blue': 'Blau',
+        'color_purple': 'Violett',
+        'color_pink': 'Pink',
+        'color_warm': 'Warmweiß',
+        'color_white': 'Weiß',
+        'gradient_sunset': 'Sonnenuntergang',
+        'gradient_ocean': 'Ozean',
+        'gradient_aurora': 'Polarlicht',
+        'gradient_neon': 'Neon',
+        'gradient_ember': 'Glut',
+        'gradient_forest': 'Wald',
+        'gradient_presets': 'Vorlagen',
+        'gradient_flow': 'Bewegung',
+        'gradient_flow_desc': 'Der Verlauf gleitet langsam über die LEDs',
+        'style_pulse': 'Puls',
+        'style_spectrum': 'Spektrum',
+        'style_wave': 'Wellen',
+        'style_pulse_desc': 'Alle LEDs pulsieren im Takt der Musik.',
+        'style_spectrum_desc': 'Jede LED folgt ihren Tönen: Bässe unten, Höhen oben.',
+        'style_wave_desc': 'Jeder Beat schickt eine Lichtwelle an beiden Seiten des Bildschirms hoch.',
+        'music_style': 'Stil',
+        'music_colors': 'Farben',
+        'music_sensitivity': 'Empfindlichkeit',
+        'music_on': 'Die LEDs folgen dem, was dein PC abspielt. Nichts wird aufgenommen.',
+        'music_silent': 'Gerade kein Ton: spiel etwas Musik ab.',
+        'palette_rainbow': 'Regenbogen',
+        'palette_screen': 'Farben des Bildschirms',
+        'palette_color': 'Meine Farbe',
+        'palette_gradient': 'Mein Verlauf',
+        'now_base': 'Gerade kein Profil: Es gilt die Seite Umgebungslicht.',
+        'now_night': 'Nachtprofil bis {end}: {look}, Helligkeit {brightness} %.',
+        'now_app': '{rule}: {look}.',
+        'now_rest': 'Keine deiner Apps: {look}.',
+        'night_title': 'Tag und Nacht',
+        'night_profile': 'Nachtprofil',
+        'night_desc': 'Von {start} bis {end}, ein sanfteres Licht',
+        'night_hours': 'Uhrzeit',
+        'night_brightness': 'Helligkeit nachts',
+        'night_look': 'Licht nachts',
+        'night_same': 'Wie am Tag',
+        'night_short': 'Nacht',
+        'apps_title': 'Pro App',
+        'apps_empty': 'Noch keine App: füge unten eine hinzu.',
+        'apps_add': 'App hinzufügen',
+        'apps_examples': 'Zum Beispiel: Musik, wenn Spotify Ton abspielt, der Bildschirm für Spiele im Vollbild, Blau, wenn Visual Studio Code im Vordergrund ist.',
+        'rest_title': 'Die übrige Zeit',
+        'rest_desc': 'Wenn keine dieser Apps passt',
+        'look_label': 'Licht',
+        'look_auto': 'Auto: die Seite Umgebungslicht',
+        'look_auto_short': 'Auto',
+        'look_device': 'Eigener Effekt der LEDs',
+        'look_off': 'LEDs aus',
+        'sync_playing': 'Spielt Ton ab',
+        'profiles_none': 'Keins',
+        'profiles_one': '1 Profil',
+        'profiles_many': '{n} Profile',
+        'profiles_none_long': 'Keins: die Einstellungen oben gelten immer',
+        'profiles_apps_one': '1 App',
+        'profiles_apps': '{n} Apps',
+        'profiles_now': 'jetzt {name}',
+        'state_device': 'Eigener Effekt der LEDs',
+        'state_dark': 'LEDs aus',
+        'tip_device': 'Glowback: die LEDs zeigen ihren eigenen Effekt',
+        'home_leds_title': 'Anzahl der LEDs',
+        'home_update_title': 'Updates',
+        'home_light': 'Ein- und ausschalten, Helligkeit, Farbe und Modus einstellen',
+        'home_leds': 'Wie viele LEDs Glowback gerade steuert',
+        'home_update': 'Neue Glowback-Versionen, aus Home Assistant installiert',
     },
     'it': {
         'update_downloading': 'Download di Glowback {version}…',
@@ -2380,21 +3347,9 @@ STRINGS = {
         'nav_about': 'Informazioni',
         'app_quit': 'Esci da Glowback',
         'app_background': "Glowback continua in background. Fai clic sulla sua icona accanto all'orologio per tornare.",
-        'light_sub': "I LED dietro lo schermo seguono l'immagine, in diretta.",
         'mode_zones_desc': "Ogni LED prende i colori dell'immagine proprio accanto a sé.",
         'mode_average_desc': 'Tutti i LED mostrano il colore medio dello schermo.',
-        'sync_when': 'Quando sincronizzare',
-        'sync_sub': 'Glowback segue lo schermo sempre, oppure solo mentre è soddisfatta una delle tue condizioni. Il resto del tempo, i LED mostrano il proprio effetto.',
-        'sync_always': 'Sempre',
-        'sync_one': '1 condizione',
-        'sync_many': '{n} condizioni',
-        'sync_now_on': 'Glowback segue lo schermo: {rule}',
-        'sync_now_waiting': 'Nessuna condizione soddisfatta: i LED mostrano il proprio effetto.',
-        'sync_now_always': 'Nessuna condizione: Glowback segue lo schermo sempre.',
         'sync_now_paused': 'La luce ambientale è in pausa.',
-        'sync_list': 'Condizioni',
-        'sync_empty': 'Ancora nessuna condizione: Glowback segue lo schermo sempre.',
-        'sync_add_title': 'Aggiungi una condizione',
         'sync_app': 'App',
         'sync_when_label': 'Quando',
         'sync_screen': 'Schermo',
@@ -2409,10 +3364,7 @@ STRINGS = {
         'sync_screen_n': 'Schermo {n}',
         'sync_add': 'Aggiungi',
         'sync_remove': 'Rimuovi',
-        'sync_examples': 'Per esempio: un lettore video in primo piano, qualsiasi app a schermo intero sullo schermo dei LED, o un launcher di giochi aperto.',
         'sync_programs': 'Programmi',
-        'state_waiting': 'In attesa di una condizione',
-        'tip_waiting': 'Glowback: in attesa di una condizione',
         'home_sub': 'Comanda la luce ambientale da Home Assistant, dalle sue automazioni e dal tuo assistente vocale.',
         'home_connected': 'Connesso a {host}',
         'home_not_set': 'Non configurato',
@@ -2421,9 +3373,6 @@ STRINGS = {
         'home_setup': 'Configura',
         'home_change': 'Modifica',
         'home_entities': 'In Home Assistant',
-        'home_light': 'Luce ambientale accesa o spenta, luminosità e modalità',
-        'home_leds': 'Numero di LED comandati da Glowback',
-        'home_update': 'Nuove versioni, installate da Home Assistant',
         'home_voice': 'Assistenti vocali',
         'home_voice_text': "Google Assistant e Alexa funzionano tramite Home Assistant, Siri e l'app Casa con la sua integrazione HomeKit Bridge.",
         'settings_sub': 'Avvio, aggiornamenti e lingua.',
@@ -2444,6 +3393,89 @@ STRINGS = {
         'about_source': 'Codice sorgente e guida',
         'about_issue': 'Segnala un problema',
         'about_license': 'Libero e open source, licenza MIT.',
+        'nav_profiles': 'Profili',
+        'profiles_sub': "Cambia atmosfera in base all'ora, all'app in primo piano o al suono che si sente. Il resto del tempo vale la pagina Luce ambientale.",
+        'light_sub': "Cosa mostrano i LED dietro lo schermo: l'immagine, un colore, una sfumatura o la tua musica.",
+        'mode_zones': 'Schermo',
+        'mode_average': 'Media',
+        'mode_color': 'Colore',
+        'mode_gradient': 'Sfumatura',
+        'mode_music': 'Musica',
+        'color_hue': 'Tonalità',
+        'color_sat': 'Saturazione',
+        'color_red': 'Rosso',
+        'color_orange': 'Arancione',
+        'color_yellow': 'Giallo',
+        'color_green': 'Verde',
+        'color_cyan': 'Ciano',
+        'color_blue': 'Blu',
+        'color_purple': 'Viola',
+        'color_pink': 'Rosa',
+        'color_warm': 'Bianco caldo',
+        'color_white': 'Bianco',
+        'gradient_sunset': 'Tramonto',
+        'gradient_ocean': 'Oceano',
+        'gradient_aurora': 'Aurora',
+        'gradient_neon': 'Neon',
+        'gradient_ember': 'Brace',
+        'gradient_forest': 'Foresta',
+        'gradient_presets': 'Modelli',
+        'gradient_flow': 'Scorrimento',
+        'gradient_flow_desc': 'La sfumatura scorre lentamente sui LED',
+        'style_pulse': 'Pulsazione',
+        'style_spectrum': 'Spettro',
+        'style_wave': 'Onde',
+        'style_pulse_desc': 'Tutti i LED battono al ritmo della musica.',
+        'style_spectrum_desc': 'Ogni LED segue le sue note: bassi in basso, acuti in alto.',
+        'style_wave_desc': "Ogni colpo manda un'onda di luce su entrambi i lati dello schermo.",
+        'music_style': 'Stile',
+        'music_colors': 'Colori',
+        'music_sensitivity': 'Sensibilità',
+        'music_on': 'I LED seguono ciò che suona il PC. Non viene registrato nulla.',
+        'music_silent': 'Nessun suono per ora: fai partire della musica.',
+        'palette_rainbow': 'Arcobaleno',
+        'palette_screen': 'Colori dello schermo',
+        'palette_color': 'Il mio colore',
+        'palette_gradient': 'La mia sfumatura',
+        'now_base': 'Nessun profilo ora: vale la pagina Luce ambientale.',
+        'now_night': 'Profilo notturno fino alle {end}: {look}, luminosità {brightness} %.',
+        'now_app': '{rule}: {look}.',
+        'now_rest': 'Nessuna delle tue app: {look}.',
+        'night_title': 'Giorno e notte',
+        'night_profile': 'Profilo notturno',
+        'night_desc': 'Dalle {start} alle {end}, una luce più morbida',
+        'night_hours': 'Orari',
+        'night_brightness': 'Luminosità di notte',
+        'night_look': 'Atmosfera di notte',
+        'night_same': 'Come di giorno',
+        'night_short': 'Notte',
+        'apps_title': 'Per app',
+        'apps_empty': 'Ancora nessuna app: aggiungine una qui sotto.',
+        'apps_add': "Aggiungi un'app",
+        'apps_examples': 'Per esempio: la musica quando Spotify riproduce suono, lo schermo per i giochi a schermo intero, il blu quando Visual Studio Code è in primo piano.',
+        'rest_title': 'Il resto del tempo',
+        'rest_desc': 'Quando nessuna di queste app corrisponde',
+        'look_label': 'Atmosfera',
+        'look_auto': 'Auto: la pagina Luce ambientale',
+        'look_auto_short': 'Auto',
+        'look_device': 'Effetto proprio dei LED',
+        'look_off': 'LED spenti',
+        'sync_playing': 'Riproduce suono',
+        'profiles_none': 'Nessuno',
+        'profiles_one': '1 profilo',
+        'profiles_many': '{n} profili',
+        'profiles_none_long': 'Nessuno: le impostazioni qui sopra valgono sempre',
+        'profiles_apps_one': '1 app',
+        'profiles_apps': '{n} app',
+        'profiles_now': 'ora {name}',
+        'state_device': 'Effetto proprio dei LED',
+        'state_dark': 'LED spenti',
+        'tip_device': 'Glowback: i LED mostrano il loro effetto',
+        'home_leds_title': 'Numero di LED',
+        'home_update_title': 'Aggiornamenti',
+        'home_light': 'Accendila o spegnila, regola luminosità, colore e modalità',
+        'home_leds': 'Quanti LED gestisce Glowback in questo momento',
+        'home_update': 'Le nuove versioni di Glowback, installate da Home Assistant',
     },
     'pt': {
         'update_downloading': 'Baixando o Glowback {version}…',
@@ -2525,21 +3557,9 @@ STRINGS = {
         'nav_about': 'Sobre',
         'app_quit': 'Sair do Glowback',
         'app_background': 'O Glowback continua em segundo plano. Clique no ícone dele ao lado do relógio para voltar.',
-        'light_sub': 'Os LEDs atrás da sua tela acompanham a imagem, ao vivo.',
         'mode_zones_desc': 'Cada LED pega as cores da imagem bem ao lado dele.',
         'mode_average_desc': 'Todos os LEDs mostram a cor média da tela.',
-        'sync_when': 'Quando sincronizar',
-        'sync_sub': 'O Glowback acompanha a tela o tempo todo, ou só enquanto uma das suas condições for atendida. No resto do tempo, os LEDs mostram o próprio efeito.',
-        'sync_always': 'Sempre',
-        'sync_one': '1 condição',
-        'sync_many': '{n} condições',
-        'sync_now_on': 'O Glowback acompanha a tela: {rule}',
-        'sync_now_waiting': 'Nenhuma condição atendida: os LEDs mostram o próprio efeito.',
-        'sync_now_always': 'Sem condições: o Glowback acompanha a tela o tempo todo.',
         'sync_now_paused': 'A luz ambiente está pausada.',
-        'sync_list': 'Condições',
-        'sync_empty': 'Ainda não há condições: o Glowback acompanha a tela o tempo todo.',
-        'sync_add_title': 'Adicionar uma condição',
         'sync_app': 'App',
         'sync_when_label': 'Quando',
         'sync_screen': 'Tela',
@@ -2554,10 +3574,7 @@ STRINGS = {
         'sync_screen_n': 'Tela {n}',
         'sync_add': 'Adicionar',
         'sync_remove': 'Remover',
-        'sync_examples': 'Por exemplo: um player de vídeo em primeiro plano, qualquer app em tela cheia na tela dos LEDs, ou um launcher de jogos aberto.',
         'sync_programs': 'Programas',
-        'state_waiting': 'Aguardando uma condição',
-        'tip_waiting': 'Glowback: aguardando uma condição',
         'home_sub': 'Controle a luz ambiente pelo Home Assistant, pelas automações dele e pelo seu assistente de voz.',
         'home_connected': 'Conectado a {host}',
         'home_not_set': 'Não configurado',
@@ -2566,9 +3583,6 @@ STRINGS = {
         'home_setup': 'Configurar',
         'home_change': 'Alterar',
         'home_entities': 'No Home Assistant',
-        'home_light': 'Luz ambiente ligada ou desligada, brilho e modo',
-        'home_leds': 'Número de LEDs controlados pelo Glowback',
-        'home_update': 'Novas versões, instaladas pelo Home Assistant',
         'home_voice': 'Assistentes de voz',
         'home_voice_text': 'O Google Assistente e a Alexa funcionam pelo Home Assistant, a Siri e o app Casa pela integração HomeKit Bridge dele.',
         'settings_sub': 'Inicialização, atualizações e idioma.',
@@ -2589,6 +3603,89 @@ STRINGS = {
         'about_source': 'Código-fonte e guia',
         'about_issue': 'Relatar um problema',
         'about_license': 'Livre e de código aberto, licença MIT.',
+        'nav_profiles': 'Perfis',
+        'profiles_sub': 'Mude o clima conforme a hora, o app em primeiro plano ou o som que toca. No resto do tempo, vale a página Luz ambiente.',
+        'light_sub': 'O que os LEDs atrás da sua tela mostram: a imagem, uma cor, um degradê ou a sua música.',
+        'mode_zones': 'Tela',
+        'mode_average': 'Média',
+        'mode_color': 'Cor',
+        'mode_gradient': 'Degradê',
+        'mode_music': 'Música',
+        'color_hue': 'Matiz',
+        'color_sat': 'Saturação',
+        'color_red': 'Vermelho',
+        'color_orange': 'Laranja',
+        'color_yellow': 'Amarelo',
+        'color_green': 'Verde',
+        'color_cyan': 'Ciano',
+        'color_blue': 'Azul',
+        'color_purple': 'Roxo',
+        'color_pink': 'Rosa',
+        'color_warm': 'Branco quente',
+        'color_white': 'Branco',
+        'gradient_sunset': 'Pôr do sol',
+        'gradient_ocean': 'Oceano',
+        'gradient_aurora': 'Aurora',
+        'gradient_neon': 'Neon',
+        'gradient_ember': 'Brasa',
+        'gradient_forest': 'Floresta',
+        'gradient_presets': 'Modelos',
+        'gradient_flow': 'Movimento',
+        'gradient_flow_desc': 'O degradê desliza devagar pelos LEDs',
+        'style_pulse': 'Pulso',
+        'style_spectrum': 'Espectro',
+        'style_wave': 'Ondas',
+        'style_pulse_desc': 'Todos os LEDs pulsam no ritmo da música.',
+        'style_spectrum_desc': 'Cada LED segue as suas notas: graves embaixo, agudos em cima.',
+        'style_wave_desc': 'Cada batida manda uma onda de luz pelos dois lados da tela.',
+        'music_style': 'Estilo',
+        'music_colors': 'Cores',
+        'music_sensitivity': 'Sensibilidade',
+        'music_on': 'Os LEDs seguem o que o seu PC toca. Nada é gravado.',
+        'music_silent': 'Nenhum som agora: coloque uma música.',
+        'palette_rainbow': 'Arco-íris',
+        'palette_screen': 'Cores da tela',
+        'palette_color': 'Minha cor',
+        'palette_gradient': 'Meu degradê',
+        'now_base': 'Nenhum perfil agora: vale a página Luz ambiente.',
+        'now_night': 'Perfil noturno até {end}: {look}, brilho {brightness} %.',
+        'now_app': '{rule}: {look}.',
+        'now_rest': 'Nenhum dos seus apps: {look}.',
+        'night_title': 'Dia e noite',
+        'night_profile': 'Perfil noturno',
+        'night_desc': 'Das {start} às {end}, uma luz mais suave',
+        'night_hours': 'Horário',
+        'night_brightness': 'Brilho à noite',
+        'night_look': 'Clima à noite',
+        'night_same': 'Igual ao dia',
+        'night_short': 'Noite',
+        'apps_title': 'Por app',
+        'apps_empty': 'Nenhum app ainda: adicione um abaixo.',
+        'apps_add': 'Adicionar um app',
+        'apps_examples': 'Por exemplo: a música quando o Spotify toca som, a tela para jogos em tela cheia, azul quando o Visual Studio Code está em primeiro plano.',
+        'rest_title': 'O resto do tempo',
+        'rest_desc': 'Quando nenhum desses apps corresponde',
+        'look_label': 'Clima',
+        'look_auto': 'Auto: a página Luz ambiente',
+        'look_auto_short': 'Auto',
+        'look_device': 'Efeito próprio dos LEDs',
+        'look_off': 'LEDs apagados',
+        'sync_playing': 'Toca som',
+        'profiles_none': 'Nenhum',
+        'profiles_one': '1 perfil',
+        'profiles_many': '{n} perfis',
+        'profiles_none_long': 'Nenhum: as configurações acima valem sempre',
+        'profiles_apps_one': '1 app',
+        'profiles_apps': '{n} apps',
+        'profiles_now': 'agora {name}',
+        'state_device': 'Efeito próprio dos LEDs',
+        'state_dark': 'LEDs apagados',
+        'tip_device': 'Glowback: os LEDs mostram o próprio efeito',
+        'home_leds_title': 'Número de LEDs',
+        'home_update_title': 'Atualizações',
+        'home_light': 'Ligue ou desligue, ajuste o brilho, a cor e o modo',
+        'home_leds': 'Quantos LEDs o Glowback controla agora',
+        'home_update': 'As novas versões do Glowback, instaladas pelo Home Assistant',
     },
 }
 LANGS = tuple(STRINGS)
@@ -2960,6 +4057,10 @@ class MenuPainter:
                  delete="", globe="", code="", bug="", window="", add="",
                  lang="", mic="", apps="", pause="", search="")
 
+    ICONS.update(moon="", drop="", gradient="", music="", pulse="",
+                 spectrum="", wave="", layers="", minus="", chev_left="",
+                 volume="", sparkle="", bulb="", flow="", arrow="")
+
     def __init__(self, scale, icon):
         self.k, self.icon = scale, icon
         face = ui_font_face()
@@ -3000,7 +4101,7 @@ class MenuPainter:
         elif kind == "label":
             w = p(18 + 16) + self.text_width(it["text"].upper(), self.f_label)
         else:
-            left = p(46) if it.get("icon") else p(18)
+            left = p(46) if it.get("icon") or "swatch" in it or "stops" in it else p(18)
             w = left + self.text_width(it["text"], self.f_text) + self.right_space(it) + p(8)
         mis.itemWidth = max(w, p(it.get("min", 232)))
 
@@ -3014,7 +4115,7 @@ class MenuPainter:
         if kind == "submenu":
             return p(16 + 16 + 12) + self.text_width(it.get("value", ""), self.f_small)
         if kind == "segments":
-            return p(16 + 12) + len(it["values"]) * p(44) + (len(it["values"]) - 1) * p(3)
+            return p(16 + 12) + len(it["values"]) * p(it.get("seg_w", 44)) + (len(it["values"]) - 1) * p(3)
         if it.get("statuses"):  # room for the loader, or the widest result with its glyph
             return p(16 + 12) + max([p(16)] + [p(17) + self.text_width(t, self.f_small) for t in it["statuses"]])
         return p(16 + 14 + 12) if it.get("link") else p(16)
@@ -3028,7 +4129,7 @@ class MenuPainter:
     def segment_rects(self, it, l, t, r, b):
         """(x0, y0, x1, y1) of each choice of a "segments" item, right-aligned in the row."""
         p, n = self.px, len(it["values"])
-        w, gap = p(44), p(3)
+        w, gap = p(it.get("seg_w", 44)), p(3)
         x = r - p(16) - n * w - (n - 1) * gap
         return [(x + i * (w + gap), t + p(6), x + i * (w + gap) + w, b - p(6)) for i in range(n)]
 
@@ -3056,6 +4157,9 @@ class MenuPainter:
         gdiplus.GdipSetSmoothingMode(g, 4)
         gdiplus.GdipSetPixelOffsetMode(g, 4)
         for shape in shapes:
+            if shape[0] == "hgrad":  # ("hgrad", colors, x, y, w, h, radius): a gradient (look menus)
+                gdip_hgrad(g, *shape[1:])
+                continue
             if shape[0] == "arc":  # ("arc", color, x, y, d, start, sweep, width): the update loader
                 _, color, x, y, d, start, sweep, width = shape
                 pen = VP()
@@ -3129,7 +4233,12 @@ class MenuPainter:
                     shapes.append(("round", self.ACCENT, x0, y0, x1 - x0, y1 - y0, p(6)))
                 elif it.get("hover_seg") == i:
                     shapes.append(("round", self.HOVER, x0, y0, x1 - x0, y1 - y0, p(6)))
-        elif kind == "radio":
+        if "swatch" in it:  # a color, before the text
+            d = p(16)
+            shapes.append(("circle", it["swatch"], l + p(18), t + (h - d) / 2, d))
+        elif "stops" in it:  # a gradient
+            shapes.append(("hgrad", it["stops"], l + p(14), t + (h - p(12)) / 2, p(24), p(12), p(6)))
+        if kind == "radio":
             d = p(16)
             x_, y_ = r - p(16) - d, t + (h - d) / 2
             if it.get("checked"):
@@ -3152,7 +4261,7 @@ class MenuPainter:
         elif kind == "label":
             self._text(hdc, it["text"].upper(), self.f_label, self.LABEL, l + p(18), t + p(8), r, b)
         elif kind != "sep":
-            x = l + p(18)
+            x = l + p(46) if "swatch" in it or "stops" in it else l + p(18)
             if it.get("icon"):
                 color = self.ACCENT if it.get("accent") else self.ICON
                 self._text(hdc, self.ICONS[it["icon"]], self.f_icon, color, l + p(10), t, l + p(42), b, 0x1)
@@ -3175,7 +4284,11 @@ class MenuPainter:
             elif kind == "segments":
                 for i, (x0, y0, x1, y1) in enumerate(self.segment_rects(it, l, t, r, b)):
                     on = it["values"][i] == it["value"]
-                    self._text(hdc, f"{it['values'][i]}%", self.f_small, 0xFFFFFF if on else self.MUTED, x0, y0, x1, y1, 0x1)
+                    color = 0xFFFFFF if on else (self.TEXT if it.get("hover_seg") == i else self.MUTED)
+                    if it.get("glyphs"):
+                        self._text(hdc, it["glyphs"][i], self.f_icon, color, x0, y0, x1, y1, 0x1)
+                    else:
+                        self._text(hdc, f"{it['values'][i]}%", self.f_small, color, x0, y0, x1, y1, 0x1)
 
 
 class PAINTSTRUCT(ctypes.Structure):
@@ -3233,9 +4346,10 @@ def dock_flyout(pt, w, h, gap, work, screen, bar):
 
 
 # =============================================================================
-# Sync conditions: follow the screen only while an app runs, is in front or full screen, on a given screen
+# Apps' profiles: while an app runs, is in front, is full screen (on a given screen) or plays sound, the LEDs
+# show the profile's look (or the Ambient light page's); the rest of the time, what the user chose
 # =============================================================================
-WHEN = ("running", "foreground", "fullscreen")
+WHEN = ("running", "foreground", "fullscreen", "playing")
 DESKTOP_CLASSES = ("Progman", "WorkerW", "Shell_TrayWnd", "Shell_SecondaryTrayWnd")
 WNDENUMPROC = ctypes.WINFUNCTYPE(wt.BOOL, HANDLE, wt.LPARAM)
 version_dll = ctypes.WinDLL("version")
@@ -3280,18 +4394,23 @@ def app_key(name):
 
 
 def clean_rules(rules):
-    """Valid sync conditions only: {"app": "vlc.exe" ("" = any app), "when": one of WHEN,
-    "screen": "" (any), "leds" (the screen the LEDs follow) or a screen name, "name": what the app is called}."""
+    """Valid apps' profiles only: {"app": "vlc.exe" ("" = any app), "when": one of WHEN,
+    "screen": "" (any), "leds" (the screen the LEDs follow) or a screen name, "name": what the app is called,
+    "look": what the LEDs show then (see clean_look; none: the Ambient light page)}."""
     out = []
     for r in rules if isinstance(rules, list) else []:
         if not isinstance(r, dict):
             continue
         rule = {"app": app_key(r.get("app", "")), "when": r.get("when") if r.get("when") in WHEN else "foreground",
                 "screen": str(r.get("screen") or "")[:80]}
+        if rule["when"] == "playing":
+            rule["screen"] = ""  # sound has no screen
         if rule["app"] and r.get("name"):
             rule["name"] = str(r["name"])[:80]
         if rule["app"] and r.get("path"):  # for the app's icon
             rule["path"] = str(r["path"])[:400]
+        if clean_look(r.get("look")):
+            rule["look"] = clean_look(r["look"])
         if rule["when"] == "running" and not rule["app"] and not rule["screen"]:
             continue  # "any app is running": always true, says nothing
         key = lambda d: (d["app"], d["when"], d["screen"])
@@ -3504,12 +4623,16 @@ def screen_devices(screen, leds, monitors):
     return {m.device for m in monitors if c and (c == _norm(m.device) or c == _norm(m.name) or c in _norm(m.name + m.pnp))}
 
 
-def conditions_met(rules, leds, monitors, watch):
-    """The first sync condition that holds now, or None. (No conditions at all: Glowback always follows the screen.)"""
-    fg = None
+def conditions_met(rules, leds, monitors, watch, sound=None):
+    """The first app's condition that holds now, or None."""
+    fg = playing = None
     for r in rules:
         app, screens = r["app"], screen_devices(r["screen"], leds, monitors)
-        if r["when"] == "running":
+        if r["when"] == "playing":
+            if playing is None:
+                playing = {watch.exe_of(pid) for pid in sound.pids()} - {""} if sound else set()
+            ok = app in playing if app else bool(playing)
+        elif r["when"] == "running":
             if screens is None:
                 ok = app in watch.processes().values()
             else:
@@ -3524,9 +4647,11 @@ def conditions_met(rules, leds, monitors, watch):
 
 
 def parse_rule(text, monitors=()):
-    """Command line form WHEN:APP[@SCREEN] -> a condition, e.g. foreground:vlc.exe, fullscreen:*@leds, running:steam."""
+    """Command line form WHEN:APP[@SCREEN] -> a condition, e.g. foreground:vlc.exe, fullscreen:*@leds, running:steam,
+    playing:spotify."""
     when, _, rest = text.partition(":")
-    when = {"front": "foreground", "full": "fullscreen", "run": "running"}.get(when.strip().lower(), when.strip().lower())
+    when = {"front": "foreground", "full": "fullscreen", "run": "running", "sound": "playing", "play": "playing",
+            "audio": "playing"}.get(when.strip().lower(), when.strip().lower())
     if when not in WHEN or not rest.strip():
         raise ValueError(text)
     app, _, screen = rest.partition("@")
@@ -3547,10 +4672,10 @@ def parse_rule(text, monitors=()):
 def cmd_sync_when(values):
     """glowback --sync-when WHEN:APP[@SCREEN] ... (or always): saved; a running Glowback follows within 2 seconds."""
     usage = ("usage: glowback --sync-when WHEN:APP[@SCREEN] [--sync-when ...]   or   --sync-when always\n"
-             "  WHEN: running, foreground or fullscreen; APP: an .exe name or * for any app;\n"
+             "  WHEN: running, foreground, fullscreen or playing (plays sound); APP: an .exe name or * for any app;\n"
              "  SCREEN: leds (the screen the LEDs follow), a number from --list, or a screen name")
     if any(v.strip().lower() in ("always", "off", "none") for v in values):
-        save_settings({"sync_when": []})
+        save_settings({"sync_when": [], "otherwise": "auto"})
         print("Glowback follows the screen all the time.")
         return
     monitors = list_monitors()
@@ -3558,11 +4683,12 @@ def cmd_sync_when(values):
         rules = clean_rules([parse_rule(v, monitors) for v in values])
     except ValueError as e:
         sys.exit(f"Not understood: {e}\n{usage}")
-    save_settings({"sync_when": rules})
-    print("Glowback follows the screen only while one of these holds:")
+    save_settings({"sync_when": rules, "otherwise": "device"})
+    print("Glowback follows the screen only while one of these holds (the rest of the time, the LEDs show their own effect):")
+    whens = dict(running="is running", foreground="is in front", fullscreen="is full screen", playing="plays sound")
     for r in rules:
         where = {"": "", "leds": " on the LED screen"}.get(r["screen"], f" on screen {r['screen']}")
-        print(f"  {r['app'] or 'any app'} {dict(running='is running', foreground='is in front', fullscreen='is full screen')[r['when']]}{where}")
+        print(f"  {r['app'] or 'any app'} {whens[r['when']]}{where}")
 
 
 class Tray:
@@ -3609,7 +4735,7 @@ class Tray:
         n.uFlags = 0x1 | 0x2 | 0x4  # MESSAGE | ICON | TIP
         s = self.state
         n.hIcon = self.icons[0 if s.enabled and not s.waiting else 1]
-        n.szTip = tr("tip_off") if not s.enabled else tr("tip_waiting") if s.waiting else tr("tip_on")
+        n.szTip = tr("tip_off") if not s.enabled else tr("tip_device") if s.waiting else tr("tip_on")
         if info:
             n.uFlags |= 0x10  # NIF_INFO
             n.szInfoTitle, n.szInfo = info
@@ -3768,14 +4894,7 @@ class Tray:
     def _items(self):
         """The panel's content, rebuilt on every paint so it always shows the current state."""
         s = self.state
-        if not s.enabled:
-            status, dot = tr("state_paused"), "off"
-        elif s.waiting:
-            status, dot = tr("state_waiting"), "none"
-        elif s.leds:
-            status, dot = tr("state_on", leds=s.leds), "on"
-        else:
-            status, dot = tr("state_none"), "none"
+        status, dot = s.status()
         items = [dict(kind="header", status=status, state=dot)]
         if s.new_version:
             items.append(dict(kind="action", id=25, icon="sync", text=tr("update_to", version=s.new_version),
@@ -3783,14 +4902,15 @@ class Tray:
         items += [dict(kind="action", id=29, icon="window", text=tr("open_app")),
                   dict(kind="sep"),
                   dict(kind="toggle", id=1, icon="light", text=tr("ambilight"), on=s.enabled),
-                  dict(kind="action", id=28, icon="filter", text=tr("sync_when"), status=self._sync_status(),
-                       statuses=(tr("sync_always"), tr("sync_many", n=12))),
+                  dict(kind="action", id=28, icon="layers", text=tr("nav_profiles"), status=self._profile_status(),
+                       statuses=(tr("profiles_none"), tr("profiles_many", n=12), tr("night_short"), "Spotify Premium")),
                   dict(kind="toggle", id=20, icon="power", text=tr("start_windows"), on=self.autostart),
                   dict(kind="action", id=27, icon="home", text="Home Assistant", status=Tray._ha_status(self),
                        statuses=(tr("ha_setup"), tr("ha_connected"), tr("ha_connecting"), tr("ha_error"))),
                   dict(kind="sep"), dict(kind="label", text=tr("mode")),
-                  dict(kind="radio", id=2, icon="monitor", text=tr("zones"), checked=s.mode == "zones"),
-                  dict(kind="radio", id=3, icon="palette", text=tr("average"), checked=s.mode == "average"),
+                  dict(kind="segments", id=11, icon=AppWindow.MODE_ICONS[s.mode], text=tr("mode_" + s.mode),
+                       values=MODES, value=s.mode, seg_w=34, glyphs=[MenuPainter.ICONS[AppWindow.MODE_ICONS[m]]
+                                                                     for m in MODES]),
                   dict(kind="segments", id=10, icon="sun", text=tr("brightness"), values=(25, 50, 75, 100),
                        value=round(s.brightness)),
                   dict(kind="sep"), dict(kind="label", text=tr("about")),
@@ -3807,15 +4927,21 @@ class Tray:
                 it["hover_seg"] = self.hover_seg
         return items
 
-    def _sync_status(self):
-        """Right side of the "When to sync" row: (text, colour, glyph)."""
+    def _profile_status(self):
+        """Right side of the Profiles row: (text, colour, glyph)."""
         s = self.state
-        if not s.rules:
-            return tr("sync_always"), MenuPainter.MUTED, None
-        text = tr("sync_one") if len(s.rules) == 1 else tr("sync_many", n=len(s.rules))
-        if not s.enabled:
-            return text, MenuPainter.MUTED, None
-        return (text, MenuPainter.AMBER, "clock") if s.waiting else (text, MenuPainter.GREEN, "check")
+        count = len(s.rules) + (1 if s.night["on"] else 0)
+        if not count:
+            return tr("profiles_none"), MenuPainter.MUTED, None
+        a = s.active
+        if s.enabled and a["source"] == "app":
+            name = (a["rule"].get("name") or a["rule"]["app"][:-4]) if a["rule"]["app"] else tr("sync_any_app")
+            return (name[:15] + "…" if len(name) > 16 else name), MenuPainter.GREEN, "check"
+        if s.enabled and a["source"] == "night":
+            return tr("night_short"), MenuPainter.LABEL, "moon"
+        if s.enabled and a["source"] == "rest" and a["look"]["mode"] in ("device", "off"):
+            return tr("look_device" if a["look"]["mode"] == "device" else "look_off"), MenuPainter.AMBER, "clock"
+        return (tr("profiles_one") if count == 1 else tr("profiles_many", n=count)), MenuPainter.MUTED, None
 
     def _ha_status(self):
         """Right side of the Home Assistant row: (text, colour, glyph)."""
@@ -3984,8 +5110,9 @@ class Tray:
             self.autostart = autostart_enabled()
         elif cid == 24:
             s.update(check_updates=not s.check_updates)
-        elif cid in (2, 3):
-            s.update(mode="zones" if cid == 2 else "average")
+        elif cid == 11:
+            if seg is not None:
+                s.update(mode=MODES[seg])
         elif cid == 10:
             if seg is not None:
                 s.update(brightness=items[i]["values"][seg])
@@ -4004,7 +5131,7 @@ class Tray:
             elif cid == 27:
                 self.open_app("home")
             elif cid == 28:
-                self.open_app("sync")
+                self.open_app("profiles")
             elif cid == 29:
                 self.open_app()
             elif cid == 99:
@@ -4212,7 +5339,8 @@ def run_with_tray(args, stop, state, argv):
 # Home Assistant (MQTT discovery), and through it Google Assistant and Alexa
 # =============================================================================
 HA_PREFIX = "homeassistant"  # Home Assistant's MQTT discovery prefix
-HA_EFFECTS = {"Zones": "zones", "Average": "average"}  # light effects <-> Glowback modes
+HA_EFFECTS = {"Zones": "zones", "Average": "average", "Color": "color", "Gradient": "gradient",
+              "Music": "music"}  # light effects <-> Glowback modes
 HA_PICTURE = "https://raw.githubusercontent.com/Ilyomix/glowback/main/docs/img/icon-192.png"
 
 
@@ -4429,7 +5557,8 @@ def ha_error_text(e):
 
 class HomeAssistant:
     """Glowback as a device in Home Assistant, through MQTT discovery: a light (ambient light on/off, brightness,
-    mode as an effect), the number of LEDs and an update entity. Own thread; reconnects and follows the settings."""
+    color, mode as an effect), the number of LEDs and an update entity. Own thread; reconnects and follows the
+    settings."""
 
     def __init__(self, state, stop, notify=lambda: None, install=lambda: None):
         self.state, self.stop, self.notify, self.install = state, stop, notify, install
@@ -4532,7 +5661,7 @@ class HomeAssistant:
         return {
             "light": dict(name=None, unique_id=f"glowback_{self.node}", icon="mdi:television-ambient-light",
                           schema="json", command_topic=self.base + "/set", state_topic=self.base + "/state",
-                          brightness=True, brightness_scale=100, supported_color_modes=["brightness"],
+                          brightness=True, brightness_scale=100, supported_color_modes=["rgb"],
                           effect=True, effect_list=list(HA_EFFECTS), **common),
             "sensor": dict(name="LEDs", unique_id=f"glowback_{self.node}_leds", icon="mdi:led-strip-variant",
                            state_topic=self.base + "/state", value_template="{{ value_json.leds }}",
@@ -4557,9 +5686,10 @@ class HomeAssistant:
 
     def _publish_state(self, client):
         s = self.state
+        effect = next((k for k, v in HA_EFFECTS.items() if v == s.mode), "Zones")
         client.publish(self.base + "/state", {"state": "ON" if s.enabled else "OFF", "brightness": round(s.brightness),
-                                              "effect": "Average" if s.mode == "average" else "Zones",
-                                              "color_mode": "brightness", "leds": s.leds}, retain=True)
+                                              "effect": effect, "color_mode": "rgb",
+                                              "color": dict(zip("rgb", rgb(s.color))), "leds": s.leds}, retain=True)
         client.publish(self.base + "/update", {"installed_version": __version__,
                                                "latest_version": s.new_version or __version__, "title": "Glowback",
                                                "release_url": REPO_URL + "/releases/latest"}, retain=True)
@@ -4575,10 +5705,14 @@ class HomeAssistant:
                 change["enabled"] = command["state"] == "ON"
             if isinstance(command.get("brightness"), (int, float)):
                 change["brightness"] = max(1.0, min(100.0, float(command["brightness"])))
+            color = command.get("color")
+            if isinstance(color, dict) and all(isinstance(color.get(c), (int, float)) for c in "rgb"):
+                r, g, b = (max(0, min(255, int(color[c]))) for c in "rgb")
+                change["color"], change["mode"] = (r << 16) | (g << 8) | b, "color"  # a color chosen: the color mode
             if command.get("effect") in HA_EFFECTS:
                 change["mode"] = HA_EFFECTS[command["effect"]]
             if change:
-                log("Home Assistant: " + ", ".join(f"{k} {v}" for k, v in change.items()))
+                log("Home Assistant: " + ", ".join(f"{k} {color_hex(v) if k == 'color' else v}" for k, v in change.items()))
                 self.state.update(**change)
                 self.notify()
             self._publish_state(client)
@@ -5039,6 +6173,15 @@ _sig(gdiplus.GdipSetClipPath, ctypes.c_int, VP, VP, ctypes.c_int)
 _sig(gdiplus.GdipResetClip, ctypes.c_int, VP)
 
 
+class MENUITEMINFOW(ctypes.Structure):
+    _fields_ = [("cbSize", wt.UINT), ("fMask", wt.UINT), ("fType", wt.UINT), ("fState", wt.UINT), ("wID", wt.UINT),
+                ("hSubMenu", HANDLE), ("hbmpChecked", HANDLE), ("hbmpUnchecked", HANDLE),
+                ("dwItemData", ctypes.c_size_t), ("dwTypeData", wt.LPWSTR), ("cch", wt.UINT), ("hbmpItem", HANDLE)]
+
+
+_sig(user32.InsertMenuItemW, wt.BOOL, HANDLE, wt.UINT, wt.BOOL, ctypes.POINTER(MENUITEMINFOW))
+
+
 def pick_program(owner):
     """The Windows "Open" dialog, for a program that is not running now: its full path, or ''."""
     buf = ctypes.create_unicode_buffer(1024)
@@ -5052,15 +6195,66 @@ def pick_program(owner):
     return buf.value if comdlg32.GetOpenFileNameW(byref(o)) else ""
 
 
-class Gfx:
-    """GDI+ with alpha on a device context: rounded fills and outlines, circles, soft glows, clipping."""
+class POINTF(ctypes.Structure):
+    _fields_ = [("X", F), ("Y", F)]
 
-    def __init__(self, hdc):
-        self.g = VP()
+
+_sig(gdiplus.GdipCreateLineBrush, ctypes.c_int, ctypes.POINTER(POINTF), ctypes.POINTER(POINTF), ctypes.c_uint32,
+     ctypes.c_uint32, ctypes.c_int, PVP)
+_sig(gdiplus.GdipSetLinePresetBlend, ctypes.c_int, VP, ctypes.POINTER(ctypes.c_uint32), ctypes.POINTER(F), ctypes.c_int)
+_sig(gdiplus.GdipCreateBitmapFromScan0, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+     ctypes.c_void_p, PVP)
+_sig(gdiplus.GdipDrawImageRect, ctypes.c_int, VP, VP, F, F, F, F)
+_sig(gdiplus.GdipSetInterpolationMode, ctypes.c_int, VP, ctypes.c_int)
+_sig(gdiplus.GdipDisposeImage, ctypes.c_int, VP)
+_sig(gdiplus.GdipCreateRegion, ctypes.c_int, PVP)
+_sig(gdiplus.GdipGetClip, ctypes.c_int, VP, VP)
+_sig(gdiplus.GdipSetClipRegion, ctypes.c_int, VP, VP, ctypes.c_int)
+_sig(gdiplus.GdipDeleteRegion, ctypes.c_int, VP)
+_sig(gdiplus.GdipGetImageGraphicsContext, ctypes.c_int, VP, PVP)
+_sig(gdiplus.GdipSetClipRectI, ctypes.c_int, VP, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int)
+_sig(gdi32.IntersectClipRect, ctypes.c_int, HANDLE, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int)
+_sig(gdi32.SelectClipRgn, ctypes.c_int, HANDLE, HANDLE)
+
+
+def gdip_hgrad(g, colors, x, y, w, h, r, alpha=255):
+    """Fills a rounded rectangle with a left-to-right gradient through `colors`, evenly spaced."""
+    if w <= 0 or h <= 0 or not colors:
+        return
+    colors = list(colors) if len(colors) > 1 else [colors[0], colors[0]]
+    n, brush = len(colors), VP()
+    p1, p2 = POINTF(x - 1, y), POINTF(x + w + 1, y)  # a pixel beyond each end: no wrapped colour at the edges
+    if gdiplus.GdipCreateLineBrush(byref(p1), byref(p2), Gfx.argb(colors[0], alpha), Gfx.argb(colors[-1], alpha), 0,
+                                   byref(brush)):
+        return
+    blend = (ctypes.c_uint32 * n)(*(Gfx.argb(c, alpha) for c in colors))
+    pos = (F * n)(*(i / (n - 1) for i in range(n)))
+    gdiplus.GdipSetLinePresetBlend(brush, blend, pos, n)
+    path = Gfx.round_path(x, y, w, h, r)
+    gdiplus.GdipFillPath(g, brush, path)
+    gdiplus.GdipDeletePath(path)
+    gdiplus.GdipDeleteBrush(brush)
+
+
+class Gfx:
+    """GDI+ with alpha on a device context: rounded fills and outlines, circles, soft glows, gradients, pictures,
+    clipping."""
+
+    def __init__(self, hdc, clip=None):
+        self.g, self.base = VP(), clip  # clip (l, t, r, b): only that part is painted
         self.ok = bool(_gdip_start()) and gdiplus.GdipCreateFromHDC(hdc, byref(self.g)) == 0
         if self.ok:
             gdiplus.GdipSetSmoothingMode(self.g, 4)  # antialiased
             gdiplus.GdipSetPixelOffsetMode(self.g, 4)
+            self._base(0)
+
+    def _base(self, mode):
+        """Back to (mode 0), or within (mode 1), the part being painted."""
+        if self.base:
+            l, t, r, b = self.base
+            gdiplus.GdipSetClipRectI(self.g, l, t, r - l, b - t, mode)
+        elif mode == 0:
+            gdiplus.GdipResetClip(self.g)
 
     def close(self):
         if self.ok:
@@ -5082,6 +6276,19 @@ class Gfx:
         gdiplus.GdipAddPathArc(path, x, y + h - d, d, d, 90, 90)
         gdiplus.GdipClosePathFigure(path)
         return path
+
+    def _glow(self, g, color, cx, cy, rx, ry, alpha):
+        path, brush = VP(), VP()
+        gdiplus.GdipCreatePath(0, byref(path))
+        gdiplus.GdipAddPathEllipse(path, cx - rx, cy - ry, 2 * rx, 2 * ry)
+        if gdiplus.GdipCreatePathGradientFromPath(path, byref(brush)) == 0:
+            gdiplus.GdipSetPathGradientCenterColor(brush, self.argb(color, alpha))
+            edge, n = ctypes.c_uint32(self.argb(color, 0)), ctypes.c_int(1)
+            gdiplus.GdipSetPathGradientSurroundColorsWithCount(brush, byref(edge), byref(n))
+            gdiplus.GdipSetPathGradientSigmaBlend(brush, 1.0, 1.0)
+            gdiplus.GdipFillPath(g, brush, path)
+            gdiplus.GdipDeleteBrush(brush)
+        gdiplus.GdipDeletePath(path)
 
     def draw(self, shape):
         if not self.ok:
@@ -5114,18 +6321,25 @@ class Gfx:
             gdiplus.GdipDeletePath(path)
             gdiplus.GdipDeletePen(pen)
         elif kind == "glow":  # ("glow", color, cx, cy, rx, ry, alpha): light that fades out, like on a wall
-            _, color, cx, cy, rx, ry, alpha = shape
-            path, brush = VP(), VP()
-            gdiplus.GdipCreatePath(0, byref(path))
-            gdiplus.GdipAddPathEllipse(path, cx - rx, cy - ry, 2 * rx, 2 * ry)
-            if gdiplus.GdipCreatePathGradientFromPath(path, byref(brush)) == 0:
-                gdiplus.GdipSetPathGradientCenterColor(brush, self.argb(color, alpha))
-                edge, n = ctypes.c_uint32(self.argb(color, 0)), ctypes.c_int(1)
-                gdiplus.GdipSetPathGradientSurroundColorsWithCount(brush, byref(edge), byref(n))
-                gdiplus.GdipSetPathGradientSigmaBlend(brush, 1.0, 1.0)
-                gdiplus.GdipFillPath(self.g, brush, path)
-                gdiplus.GdipDeleteBrush(brush)
-            gdiplus.GdipDeletePath(path)
+            self._glow(self.g, *shape[1:])
+        elif kind == "glows":  # ("glows", [(color, cx, cy, rx, ry, alpha)], x0, y0, x1, y1): glows, drawn at a
+            _, items, x0, y0, x1, y1 = shape  # quarter of the size then stretched (it is all blur): much faster
+            if not items:
+                return
+            x = max(x0, min(cx - rx for _, cx, cy, rx, ry, _ in items))  # only where there is light
+            y = max(y0, min(cy - ry for _, cx, cy, rx, ry, _ in items))
+            w = min(x1, max(cx + rx for _, cx, cy, rx, ry, _ in items)) - x
+            h = min(y1, max(cy + ry for _, cx, cy, rx, ry, _ in items)) - y
+            k, bmp, g2 = 4.0, VP(), VP()
+            bw, bh = max(1, int(w / k) + 2), max(1, int(h / k) + 2)
+            if gdiplus.GdipCreateBitmapFromScan0(bw, bh, 0, 0xE200B, None, byref(bmp)) == 0:  # 32bppPARGB
+                if gdiplus.GdipGetImageGraphicsContext(bmp, byref(g2)) == 0:
+                    for color, cx, cy, rx, ry, alpha in items:
+                        self._glow(g2, color, (cx - x) / k, (cy - y) / k, rx / k, ry / k, alpha)
+                    gdiplus.GdipDeleteGraphics(g2)
+                    gdiplus.GdipSetInterpolationMode(self.g, 6)  # high quality bilinear: here the fastest smooth one
+                    gdiplus.GdipDrawImageRect(self.g, bmp, x, y, bw * k, bh * k)
+                gdiplus.GdipDisposeImage(bmp)
         elif kind == "arc":  # ("arc", color, x, y, d, start, sweep, width): loaders
             _, color, x, y, d, start, sweep, width = shape
             pen = VP()
@@ -5134,20 +6348,42 @@ class Gfx:
             gdiplus.GdipSetPenEndCap(pen, 2)
             gdiplus.GdipDrawArc(self.g, pen, x, y, d, d, start, sweep)
             gdiplus.GdipDeletePen(pen)
+        elif kind == "hgrad":  # ("hgrad", colors, x, y, w, h, radius[, alpha]): a gradient, left to right
+            gdip_hgrad(self.g, *shape[1:])
+        elif kind == "image":  # ("image", (width, height, BGRA rows), x, y, w, h, radius): the screen's picture
+            _, (tw, th, data), x, y, w, h, r = shape
+            bmp, saved = VP(), VP()
+            if gdiplus.GdipCreateBitmapFromScan0(tw, th, tw * 4, 0x22009, data, byref(bmp)) == 0:  # 32bppRGB
+                gdiplus.GdipCreateRegion(byref(saved))
+                gdiplus.GdipGetClip(self.g, saved)
+                path = self.round_path(x, y, w, h, r)
+                gdiplus.GdipSetClipPath(self.g, path, 1)  # CombineModeIntersect: inside the card too
+                gdiplus.GdipDeletePath(path)
+                gdiplus.GdipSetInterpolationMode(self.g, 7)  # high quality bicubic
+                gdiplus.GdipDrawImageRect(self.g, bmp, x, y, w, h)
+                gdiplus.GdipSetClipRegion(self.g, saved, 0)
+                gdiplus.GdipDeleteRegion(saved)
+                gdiplus.GdipDisposeImage(bmp)
         elif kind == "clip":  # ("clip", x, y, w, h, radius): what follows stays inside
             _, x, y, w, h, r = shape
             path = self.round_path(x, y, w, h, r)
             gdiplus.GdipSetClipPath(self.g, path, 0)  # CombineModeReplace
             gdiplus.GdipDeletePath(path)
+            self._base(1)
         elif kind == "unclip":
-            gdiplus.GdipResetClip(self.g)
+            self._base(0)
 
 
 class AppWindow:
     """Glowback's window: a sidebar of pages, drawn from display lists rebuilt on every paint, so it always shows
-    the current state. Widgets registered while composing a page serve the mouse, the keyboard and focus."""
-    PAGES = (("light", "light", "nav_light"), ("sync", "filter", "sync_when"), ("home", "home", "nav_home"),
+    the current state. Widgets registered while composing a page serve the mouse, the keyboard and focus.
+    Pages: Ambient light (live preview, the look, brightness), Profiles (night, apps), Home Assistant, Settings,
+    About."""
+    PAGES = (("light", "light", "nav_light"), ("profiles", "layers", "nav_profiles"), ("home", "home", "nav_home"),
              ("settings", "settings", "nav_settings"), ("about", "info", "nav_about"))
+    MODE_ICONS = {"zones": "monitor", "average": "palette", "color": "drop", "gradient": "gradient", "music": "music"}
+    STYLE_ICONS = {"pulse": "pulse", "spectrum": "spectrum", "wave": "wave"}
+    SLIDERS = ("brightness", "hue", "sat", "sens", "night_bright")
     BG, CARD, LINE, HOVER, SELECT = 0x121317, 0x1A1B21, 0x24262E, 0x212329, 0x1F2129
     FIELD, FIELD_LINE = 0x0F1013, 0x2E3140
     SIZE, MIN = (1040, 790), (820, 560)  # at 100 %
@@ -5164,7 +6400,9 @@ class AppWindow:
         self.hover = self.pressed = self.focus = self.drag = None
         self.focus_visible = self.tracking = False
         self.app_icons, self.menu_items, self.mons, self.mons_t = {}, [], [], -99.0
-        self.draft = dict(app="", name="", path="", when="foreground", screen="")  # the condition being added
+        self.draft = dict(app="", name="", path="", when="foreground", screen="", look=None)  # the app being added
+        self.stop_sel, self.hue_memo = 0, None  # the gradient's color being edited; the hue of a white
+        self.bufs, self.preview_rect = None, None  # paint buffers; where the live preview is
         self.sw = self.cx0 = self.cx1 = 0
         self._ref = WNDPROC(self._proc)
         self.cls = f"GlowbackApp{id(self)}"  # a class per object: each keeps its own window procedure
@@ -5285,14 +6523,8 @@ class AppWindow:
 
     # ---- building blocks
     def _status(self):
-        s = self.state
-        if not s.enabled:
-            return tr("state_paused"), MenuPainter.OFF + 0x202020
-        if s.waiting:
-            return tr("state_waiting"), MenuPainter.AMBER
-        if s.leds:
-            return tr("state_on", leds=s.leds), MenuPainter.GREEN
-        return tr("state_none"), MenuPainter.AMBER
+        text, dot = self.state.status()
+        return text, {"on": MenuPainter.GREEN, "off": MenuPainter.OFF + 0x202020, "none": MenuPainter.AMBER}[dot]
 
     def _nav(self, wid, x, y, w, icon, text, selected, quiet=False):
         p, h, ic = self.px, self.px(38), MenuPainter.ICONS
@@ -5403,35 +6635,130 @@ class AppWindow:
         self.add(wid, "button", (x, y, x + w, y + h), radius=p(7))
         return x
 
-    def _picker(self, wid, x, y, w, text, hicon=None, glyph=None):
+    def _picker(self, wid, x, y, w, text, hicon=None, glyph=None, swatch=None, stops=None, disabled=False):
         p, h, ic = self.px, self.px(36), MenuPainter.ICONS
-        hov = self.hover == wid
+        hov = self.hover == wid and not disabled
         self.S("round", self.FIELD, x, y, w, h, p(7))
         self.S("outline", 0x4A4E5E if hov else self.FIELD_LINE, x, y, w, h, p(7), max(1.0, self.k))
         tx = x + p(12)
         if hicon:
             self.I(hicon, tx, y + (h - p(20)) / 2, p(20))
             tx += p(28)
-        elif glyph:
-            self.T(ic[glyph], self.fonts["icon_s"], MenuPainter.ICON, tx, y, tx + p(18), y + h, 0x1)
+        elif swatch is not None:
+            d = p(16)
+            self.S("circle", swatch, tx + p(1), y + (h - d) / 2, d)
             tx += p(26)
-        self.T(text, self.fonts["body"], MenuPainter.TEXT, tx, y, x + w - p(34), y + h, 0x8000)
-        self.T(ic["chev_down"], self.fonts["icon_s"], MenuPainter.MUTED, x + w - p(32), y, x + w - p(10), y + h, 0x1)
-        self.add(wid, "picker", (x, y, x + w, y + h), radius=p(7))
+        elif stops:
+            self.S("hgrad", stops, tx, y + (h - p(12)) / 2, p(24), p(12), p(6))
+            tx += p(32)
+        elif glyph:
+            self.T(ic[glyph], self.fonts["icon_s"], MenuPainter.MUTED if disabled else MenuPainter.ICON, tx, y,
+                   tx + p(18), y + h, 0x1)
+            tx += p(26)
+        self.T(text, self.fonts["body"], MenuPainter.MUTED if disabled else MenuPainter.TEXT, tx, y, x + w - p(34),
+               y + h, 0x8000)
+        if not disabled:
+            self.T(ic["chev_down"], self.fonts["icon_s"], MenuPainter.MUTED, x + w - p(32), y, x + w - p(10), y + h, 0x1)
+            self.add(wid, "picker", (x, y, x + w, y + h), radius=p(7))
 
-    def _slider(self, wid, x0, x1, cy, value):
+    def _slider(self, wid, x0, x1, cy, value, track=None, knob=None):
+        """A 0-100 slider; `track`: colors of a gradient track (hue...), `knob`: the knob's color."""
         p = self.px
-        th = p(4)
         fx = x0 + (x1 - x0) * max(0.0, min(100.0, value)) / 100
-        self.S("round", 0x3A3D49, x0, cy - th / 2, x1 - x0, th, th / 2)
-        if fx > x0:
-            self.S("round", MenuPainter.ACCENT, x0, cy - th / 2, fx - x0, th, th / 2)
+        if track is None:
+            th = p(4)
+            self.S("round", 0x3A3D49, x0, cy - th / 2, x1 - x0, th, th / 2)
+            if fx > x0:
+                self.S("round", MenuPainter.ACCENT, x0, cy - th / 2, fx - x0, th, th / 2)
+        else:
+            th = p(10)
+            self.S("hgrad", track, x0, cy - th / 2, x1 - x0, th, th / 2)
         d = p(22)
-        inner = p(12) if self.hover == wid or self.drag == wid else p(10)
-        self.S("circle", 0x2B2D38, fx - d / 2, cy - d / 2, d)
-        self.S("outline", 0x45485A, fx - d / 2, cy - d / 2, d, d, d / 2, max(1.0, self.k))
-        self.S("circle", MenuPainter.ACCENT, fx - inner / 2, cy - inner / 2, inner)
+        if knob is None:
+            inner = p(12) if self.hover == wid or self.drag == wid else p(10)
+            self.S("circle", 0x2B2D38, fx - d / 2, cy - d / 2, d)
+            self.S("outline", 0x45485A, fx - d / 2, cy - d / 2, d, d, d / 2, max(1.0, self.k))
+            self.S("circle", MenuPainter.ACCENT, fx - inner / 2, cy - inner / 2, inner)
+        else:
+            ring = p(4) if self.hover == wid or self.drag == wid else p(3)
+            self.S("circle", 0xFFFFFF, fx - d / 2, cy - d / 2, d)
+            self.S("circle", knob, fx - d / 2 + ring, cy - d / 2 + ring, d - 2 * ring)
         self.add(wid, "slider", (x0 - p(12), cy - p(16), x1 + p(12), cy + p(16)), x0=x0, x1=x1, radius=p(16))
+
+    def _mode_tile(self, wid, x, y, w, h, icon, title, selected):
+        """A compact choice: its icon over its name."""
+        p, ic = self.px, MenuPainter.ICONS
+        hov = self.hover == wid
+        self.S("round", 0x1D1A30 if selected else (self.HOVER if hov else self.CARD), x, y, w, h, p(10))
+        self.S("outline", MenuPainter.ACCENT if selected else self.LINE, x, y, w, h, p(10),
+               max(1.5, p(2)) if selected else max(1.0, self.k))
+        self.T(ic[icon], self.fonts["icon_l"], MenuPainter.LABEL if selected else MenuPainter.ICON, x, y + p(12), x + w,
+               y + p(44), 0x1)
+        self.T(title, self.fonts["body"], MenuPainter.TEXT, x + p(6), y + p(46), x + w - p(6), y + h - p(12), 0x1 | 0x8000)
+        self.add(wid, "tile", (x, y, x + w, y + h), radius=p(10))
+
+    def _swatch(self, wid, x, y, d, color=None, selected=False, stops=None, w=None):
+        """A color (a disc) or a gradient (a pill) to pick; a ring shows the chosen one."""
+        p = self.px
+        w = w or d
+        hov = self.hover == wid
+        if selected or hov:
+            g = p(4)
+            self.S("outline", 0xFFFFFF if selected else 0x6B6F80, x - g, y - g, w + 2 * g, d + 2 * g, (d + 2 * g) / 2,
+                   max(1.5, p(2)))
+        if stops:
+            self.S("hgrad", stops, x, y, w, d, d / 2)
+        else:
+            self.S("circle", color, x, y, d)
+        self.add(wid, "swatch", (x - p(5), y - p(5), x + w + p(5), y + d + p(5)), radius=(d + p(10)) / 2)
+
+    def _segmented(self, prefix, x0, x1, y, options, current):
+        """Choices side by side, one of them on: options are (value, glyph, text)."""
+        p, ic, h = self.px, MenuPainter.ICONS, self.px(40)
+        self.S("round", self.FIELD, x0, y, x1 - x0, h, p(9))
+        self.S("outline", self.FIELD_LINE, x0, y, x1 - x0, h, p(9), max(1.0, self.k))
+        w = (x1 - x0 - p(8)) / len(options)
+        for i, (value, glyph, text) in enumerate(options):
+            sx, wid = x0 + p(4) + i * w, f"{prefix}:{value}"
+            on = value == current
+            if on:
+                self.S("round", MenuPainter.ACCENT, sx, y + p(4), w, h - p(8), p(6))
+            elif self.hover == wid:
+                self.S("round", self.HOVER, sx, y + p(4), w, h - p(8), p(6))
+            color = 0xFFFFFF if on else MenuPainter.ICON
+            f = self.fonts["button"]
+            full = self.tw(text, f) + (p(24) if glyph else 0)
+            tx = sx + max(p(6), (w - full) / 2)
+            if glyph and full < w - p(8):
+                self.T(ic[glyph], self.fonts["icon_s"], color, tx, y, tx + p(18), y + h, 0x1)
+                tx += p(24)
+            self.T(text, f, color, tx, y, sx + w - p(4), y + h, 0x8000)
+            self.add(wid, "tile", (sx, y + p(4), sx + w, y + h - p(4)), radius=p(6))
+
+    def _stepper(self, wid, right, y, text):
+        """[<] text [>], right-aligned on `right`: returns its left edge."""
+        p, ic = self.px, MenuPainter.ICONS
+        h, bw = p(36), p(34)
+        w = 2 * bw + max(self.tw("00:00", self.fonts["body"]), self.tw(text, self.fonts["body"])) + p(14)
+        x = right - w
+        self.S("round", self.FIELD, x, y, w, h, p(7))
+        self.S("outline", self.FIELD_LINE, x, y, w, h, p(7), max(1.0, self.k))
+        for key, gx, glyph in (("-", x, "chev_left"), ("+", x + w - bw, "chev_right")):
+            if self.hover == f"{wid}:{key}":
+                self.S("round", self.HOVER, gx + p(3), y + p(3), bw - p(6), h - p(6), p(5))
+            self.T(ic[glyph], self.fonts["icon_s"], MenuPainter.ICON, gx, y, gx + bw, y + h, 0x1)
+            self.add(f"{wid}:{key}", "button", (gx, y, gx + bw, y + h), radius=p(7))
+        self.T(text, self.fonts["body"], MenuPainter.TEXT, x + bw, y, x + w - bw, y + h, 0x1)
+        return x
+
+    def _icon_button(self, wid, x, y, size, glyph, enabled=True):
+        p, ic = self.px, MenuPainter.ICONS
+        hov = self.hover == wid and enabled
+        self.S("round", 0x2E303A if hov else 0x272932, x, y, size, size, p(7))
+        self.S("outline", 0x363843, x, y, size, size, p(7), max(1.0, self.k))
+        self.T(ic[glyph], self.fonts["icon_s"], MenuPainter.TEXT if enabled else 0x4A4E5C, x, y, x + size, y + size, 0x1)
+        if enabled:
+            self.add(wid, "button", (x, y, x + size, y + size), radius=p(7))
 
     def _tile(self, wid, x, y, w, h, icon, title, desc, selected):
         p, ic = self.px, MenuPainter.ICONS
@@ -5477,7 +6804,8 @@ class AppWindow:
         return (tr("sync_screen_n", n=m.index) + ("" if short else f" · {screen}")) if m else screen
 
     def _rule_desc(self, r):
-        return f"{tr('sync_' + r['when'])} · {self._screen_text(r['screen'])}"
+        when = tr("sync_" + r["when"])
+        return when if r["when"] == "playing" else f"{when} · {self._screen_text(r['screen'])}"
 
     def _rule_text(self, r):
         if not r:
@@ -5486,12 +6814,104 @@ class AppWindow:
         text = f"{self._app_name(r)} {when[:1].lower()}{when[1:]}"
         return text + (f" · {self._screen_text(r['screen'], short=True)}" if r["screen"] else "")
 
-    def _sync_summary(self):
+    def _look_label(self, look, auto_text):
+        """A profile's look for a picker: (text, picker options: its glyph, color or gradient)."""
         s = self.state
-        if not s.rules:
-            return tr("sync_always")
-        text = tr("sync_one") if len(s.rules) == 1 else tr("sync_many", n=len(s.rules))
-        return f"{text} · {tr('state_waiting')}" if s.enabled and s.waiting else text
+        if look is None:
+            return auto_text, dict(glyph="sparkle")
+        m = look["mode"]
+        if m == "color":
+            c = hex_color(look.get("color"))
+            name = next((n for n, v in SWATCHES if v == c), None)
+            text = tr("color_" + name) if name else (color_hex(c) if c is not None else tr("palette_color"))
+            return text, dict(swatch=s.color if c is None else c)
+        if m == "gradient":
+            st = clean_stops(look.get("gradient"))
+            name = next((n for n, v in GRADIENTS if v == st), None)
+            text = tr("gradient_" + name) if name else (tr("mode_gradient") if st else tr("palette_gradient"))
+            return text, dict(stops=st or s.gradient)
+        if m == "music":
+            return f"{tr('mode_music')} · {tr('style_' + look.get('style', s.music_style))}", dict(glyph="music")
+        if m in ("device", "off"):
+            return tr("look_" + m), dict(glyph="bulb" if m == "device" else "power")
+        return tr("mode_" + m), dict(glyph=self.MODE_ICONS[m])
+
+    def _look_name(self, look):
+        """A full look (what the LEDs show now) in a few words."""
+        m = look["mode"]
+        if m == "color":
+            name = next((n for n, v in SWATCHES if v == look["color"]), None)
+            return f"{tr('mode_color')} · " + (tr("color_" + name) if name else color_hex(look["color"]))
+        if m == "gradient":
+            name = next((n for n, v in GRADIENTS if v == tuple(look["gradient"])), None)
+            return tr("mode_gradient") + (f" · {tr('gradient_' + name)}" if name else "")
+        if m == "music":
+            return f"{tr('mode_music')} · {tr('style_' + look['style'])}"
+        if m in ("device", "off"):
+            return tr("look_" + m)
+        return tr("zones" if m == "zones" else "average")
+
+    def _look_items(self, current, auto_text):
+        """Menu entries for a profile's look; each leaf's value is ("look", the new look or None for auto)."""
+        s, cur = self.state, current or {}
+        mode = cur.get("mode")
+
+        def radio(text, look, checked, **kw):
+            return dict(kind="radio", text=text, value=("look", look), checked=checked, **kw)
+
+        screen = [radio(tr("zones"), {"mode": "zones"}, mode == "zones", icon="monitor"),
+                  radio(tr("average"), {"mode": "average"}, mode == "average", icon="palette")]
+        colors = [radio(tr("palette_color"), {"mode": "color"}, mode == "color" and "color" not in cur, swatch=s.color),
+                  dict(kind="sep")]
+        colors += [radio(tr("color_" + name), {"mode": "color", "color": color_hex(c)},
+                         mode == "color" and hex_color(cur.get("color")) == c, swatch=c) for name, c in SWATCHES]
+        grads = [radio(tr("palette_gradient"), {"mode": "gradient"}, mode == "gradient" and "gradient" not in cur,
+                       stops=s.gradient), dict(kind="sep")]
+        grads += [radio(tr("gradient_" + name), {"mode": "gradient", "gradient": [color_hex(c) for c in st]},
+                        mode == "gradient" and clean_stops(cur.get("gradient")) == st, stops=st) for name, st in GRADIENTS]
+        music = [radio(tr("style_" + st), {"mode": "music", "style": st},
+                       mode == "music" and cur.get("style", s.music_style) == st, icon=self.STYLE_ICONS[st])
+                 for st in MUSIC_STYLES]
+        text = self._look_label(current, auto_text)[0] if current else ""
+        sub = lambda glyph, title, entries, on: dict(kind="submenu", icon=glyph, text=title, items=entries,
+                                                     value=text if on else "")
+        return [radio(auto_text, None, current is None, icon="sparkle"), dict(kind="sep"),
+                sub("monitor", tr("mode_zones"), screen, mode in SCREEN_MODES),
+                sub("drop", tr("mode_color"), colors, mode == "color"),
+                sub("gradient", tr("mode_gradient"), grads, mode == "gradient"),
+                sub("music", tr("mode_music"), music, mode == "music"), dict(kind="sep"),
+                radio(tr("look_device"), {"mode": "device"}, mode == "device", icon="bulb"),
+                radio(tr("look_off"), {"mode": "off"}, mode == "off", icon="power")]
+
+    def _profile_summary(self):
+        """The Profiles row of the Ambient light page: (text, colour or None)."""
+        s = self.state
+        parts = ([f"{tr('night_short')} {hhmm(s.night['from'])}–{hhmm(s.night['to'])}"] if s.night["on"] else [])
+        if s.rules:
+            parts.append(tr("profiles_apps_one") if len(s.rules) == 1 else tr("profiles_apps", n=len(s.rules)))
+        if not parts:
+            return tr("profiles_none_long"), None
+        a = s.active
+        if s.enabled and a["source"] != "base":
+            return " · ".join(parts) + " · " + tr("profiles_now", name=self._look_name(a["look"])), MenuPainter.LABEL
+        return " · ".join(parts), None
+
+    def _profile_now(self):
+        """The Profiles page's first card: (glyph, colour, text)."""
+        s = self.state
+        a = s.active
+        look = self._look_name(a["look"])
+        if not s.enabled:
+            return "info", MenuPainter.MUTED, tr("sync_now_paused")
+        if a["source"] == "app":
+            return "apps", MenuPainter.GREEN, tr("now_app", rule=self._rule_text(a["rule"]), look=look)
+        if a["source"] == "night":
+            return "moon", MenuPainter.LABEL, tr("now_night", end=hhmm(s.night["to"]), look=look,
+                                                 brightness=a["brightness"])
+        if a["source"] == "rest":
+            dark = a["look"]["mode"] in ("device", "off")
+            return "clock", MenuPainter.AMBER if dark else MenuPainter.GREEN, tr("now_rest", look=look)
+        return "check", MenuPainter.GREEN, tr("now_base")
 
     def _app_icon(self, path):
         if not path:
@@ -5530,7 +6950,7 @@ class AppWindow:
     def compose(self):
         """Display lists for the sidebar and the current page, and the widgets under them."""
         p, (W, H) = self.px, self.size
-        self.widgets, self.side, self.content = [], ([], []), ([], [])
+        self.widgets, self.side, self.content, self.preview_rect = [], ([], []), ([], []), None
         self.sw = p(264)
         self.cx0 = self.sw + p(8)
         self.cx1 = max(self.cx0 + p(380), min(W - p(36), self.cx0 + p(860)))
@@ -5582,13 +7002,15 @@ class AppWindow:
         self.T(label, self.fonts["body"], MenuPainter.TEXT, tx - p(12) - lw, y + p(24), tx - p(12), y + p(46))
         y += h + p(22)
         y = self._label(y, tr("mode"))
-        gap = p(12)
-        tile_w = (x1 - x0 - gap) / 2
-        descs = (tr("mode_zones_desc"), tr("mode_average_desc"))
-        th = max(p(88), p(42) + max(self.wrap_h(d, self.painter.f_small, tile_w - p(90)) for d in descs) + p(18))
-        for i, (mode, icon, key) in enumerate((("zones", "monitor", "zones"), ("average", "palette", "average"))):
-            self._tile("mode:" + mode, x0 + i * (tile_w + gap), y, tile_w, th, icon, tr(key), descs[i], s.mode == mode)
-        y += th + p(22)
+        gap, th = p(10), p(84)
+        w = (x1 - x0 - gap * (len(MODES) - 1)) / len(MODES)
+        for i, mode in enumerate(MODES):
+            self._mode_tile("mode:" + mode, x0 + i * (w + gap), y, w, th, self.MODE_ICONS[mode], tr("mode_" + mode),
+                            s.mode == mode)
+        y += th + p(12)
+        y = {"color": self._opts_color, "gradient": self._opts_gradient, "music": self._opts_music}.get(
+            s.mode, self._opts_screen)(y)
+        y += p(28)
         y = self._label(y, tr("brightness"))
         h = p(64)
         self._card(y, h)
@@ -5598,32 +7020,170 @@ class AppWindow:
         y += h + p(12)
         h = p(64)
         self._card(y, h)
-        self._row_hover("goto:sync", y, h)
-        self._row_text(y, h, "filter", tr("sync_when"), self._sync_summary(), right=x1 - p(60),
-                       desc_color=MenuPainter.AMBER if s.enabled and s.waiting else None)
+        self._row_hover("goto:profiles", y, h)
+        text, color = self._profile_summary()
+        self._row_text(y, h, "layers", tr("nav_profiles"), text, right=x1 - p(60), desc_color=color)
         self.T(MenuPainter.ICONS["chev_right"], self.fonts["icon_s"], MenuPainter.MUTED, x1 - p(44), y, x1 - p(20),
                y + h, 0x1)
-        self.add("goto:sync", "row", (x0, y, x1, y + h), radius=p(10))
+        self.add("goto:profiles", "row", (x0, y, x1, y + h), radius=p(10))
         return y + h
 
+    def _card_behind(self, at, y, h):
+        """A card under what was drawn since display list index `at` (its height known only afterwards)."""
+        p, x0, x1 = self.px, self.cx0, self.cx1
+        self.content[0][at:at] = [("round", self.CARD, x0, y, x1 - x0, h, p(10)),
+                                  ("outline", self.LINE, x0, y, x1 - x0, h, p(10), max(1.0, self.k))]
+
+    def _opts_screen(self, y):
+        p, x0, x1 = self.px, self.cx0, self.cx1
+        text = tr("mode_zones_desc" if self.state.mode == "zones" else "mode_average_desc")
+        th = self.wrap_h(text, self.fonts["body"], x1 - x0 - p(82))
+        h = max(p(56), th + p(30))
+        self._card(y, h)
+        self.T(MenuPainter.ICONS["info"], self.fonts["icon"], MenuPainter.ICON, x0 + p(20), y, x0 + p(44), y + h, 0x1)
+        self.W(text, self.fonts["body"], MenuPainter.ICON, x0 + p(62), y + (h - th) / 2, x1 - p(20), y + (h + th) / 2)
+        return y + h
+
+    def _hsv(self, color):
+        """Hue and saturation of the color being edited (a white keeps the hue it had)."""
+        h, sat, _ = color_hsv(color)
+        if self.hue_memo and self.hue_memo[0] == color:
+            h = self.hue_memo[1]
+        return h, sat
+
+    def _color_rows(self, y, color, pad):
+        """Swatches, then hue and saturation, for the color being edited; returns the bottom."""
+        p, x0, x1 = self.px, self.cx0, self.cx1
+        d = p(28)
+        n = len(SWATCHES)
+        gap = min(p(14), max(p(6), (x1 - x0 - 2 * pad - n * d) / (n - 1)))
+        for i, (name, c) in enumerate(SWATCHES):
+            self._swatch("swatch:" + name, x0 + pad + i * (d + gap), y, d, c, c == color)
+        y += d + p(22)
+        h, sat = self._hsv(color)
+        lw = max(self.tw(tr("color_hue"), self.fonts["body"]), self.tw(tr("color_sat"), self.fonts["body"])) + p(20)
+        for wid, label, value, track, knob in (
+                ("hue", tr("color_hue"), h / 3.6, [hsv_color(a * 60, 1) for a in range(7)], hsv_color(h, 1)),
+                ("sat", tr("color_sat"), sat * 100, [0xFFFFFF, hsv_color(h, 1)], color)):
+            self.T(label, self.fonts["body"], MenuPainter.ICON, x0 + pad, y, x0 + pad + lw, y + p(28), 0x8000)
+            self._slider(wid, x0 + pad + lw + p(12), x1 - pad - p(12), y + p(14), value, track=track, knob=knob)
+            y += p(42)
+        return y - p(14)
+
+    def _opts_color(self, y):
+        p = self.px
+        pad, at, top = p(20), len(self.content[0]), y
+        y = self._color_rows(y + pad, self.state.color, pad) + pad
+        self._card_behind(at, top, y - top)
+        return y
+
+    def _opts_gradient(self, y):
+        p, s, x0, x1 = self.px, self.state, self.cx0, self.cx1
+        pad, at, top = p(20), len(self.content[0]), y
+        stops = s.gradient
+        self.stop_sel = min(self.stop_sel, len(stops) - 1)
+        y += pad
+        bs, bh = p(36), p(36)
+        bx = x1 - pad - bs
+        self._icon_button("stop:del", bx, y, bs, "minus", enabled=len(stops) > 2)
+        self._icon_button("stop:add", bx - p(8) - bs, y, bs, "add", enabled=len(stops) < 4)
+        gx0, gx1 = x0 + pad, bx - p(8) - bs - p(16)
+        self.S("hgrad", list(stops), gx0, y, gx1 - gx0, bh, p(9))
+        d = p(22)
+        for i, c in enumerate(stops):
+            cx = gx0 + p(18) + (gx1 - gx0 - p(36)) * i / (len(stops) - 1)
+            on, wid = i == self.stop_sel, f"stop:{i}"
+            ring = p(4) if on else (p(3) if self.hover == wid else p(2))
+            self.S("circle", 0xFFFFFF if on or self.hover == wid else 0x15161A, cx - d / 2, y + (bh - d) / 2, d)
+            self.S("circle", c, cx - d / 2 + ring, y + (bh - d) / 2 + ring, d - 2 * ring)
+            self.add(wid, "swatch", (cx - d / 2 - p(4), y, cx + d / 2 + p(4), y + bh), radius=d / 2 + p(4))
+        y += bh + p(22)
+        y = self._color_rows(y, stops[self.stop_sel], pad) + p(20)
+        self._sep(y)
+        y += p(18)
+        label = tr("gradient_presets")
+        self.T(label, self.fonts["body"], MenuPainter.ICON, x0 + pad, y, x1, y + p(28), 0x8000)
+        ph, gap, n = p(28), p(12), len(GRADIENTS)
+        px_ = x0 + pad + self.tw(label, self.fonts["body"]) + p(24)
+        pw = max(p(34), min(p(56), (x1 - pad - p(4) - px_ - gap * (n - 1)) / n))  # all of them, narrower if need be
+        for name, st in GRADIENTS:
+            if px_ + pw > x1 - pad:
+                break
+            self._swatch("preset:" + name, px_, y, ph, selected=st == tuple(stops), stops=st, w=pw)
+            px_ += pw + gap
+        y += ph + p(18)
+        self._sep(y)
+        rh = p(64)
+        tx = x1 - p(20) - p(42)
+        self._toggle("flow", tx, y + (rh - p(22)) / 2, s.flow, row=(x0, y, x1, y + rh))
+        self._row_text(y, rh, "flow", tr("gradient_flow"), tr("gradient_flow_desc"), right=tx - p(16))
+        y += rh
+        self._card_behind(at, top, y - top)
+        return y
+
+    def _opts_music(self, y):
+        p, s, ic, x0, x1 = self.px, self.state, MenuPainter.ICONS, self.cx0, self.cx1
+        pad, at, top = p(20), len(self.content[0]), y
+        silent = s.sound == "silent" and s.enabled and not s.waiting
+        glyph, color = ("volume", MenuPainter.AMBER) if silent else ("music", MenuPainter.LABEL)
+        text = tr("music_silent" if silent else "music_on")
+        th = self.wrap_h(text, self.fonts["body"], x1 - pad - x0 - p(62))
+        rh = max(p(60), th + p(30))
+        self.T(ic[glyph], self.fonts["icon"], color, x0 + p(20), y, x0 + p(44), y + rh, 0x1)
+        self.W(text, self.fonts["body"], MenuPainter.TEXT, x0 + p(62), y + (rh - th) / 2, x1 - pad, y + (rh + th) / 2)
+        y += rh
+        self._sep(y)
+        lw = max(self.tw(tr(k), self.fonts["body"]) for k in ("music_style", "music_colors", "music_sensitivity")) + p(24)
+        cx = x0 + pad + lw
+        y += p(16)
+        self.T(tr("music_style"), self.fonts["body"], MenuPainter.ICON, x0 + pad, y, cx, y + p(40), 0x8000)
+        self._segmented("style", cx, x1 - pad, y, [(st, self.STYLE_ICONS[st], tr("style_" + st)) for st in MUSIC_STYLES],
+                        s.music_style)
+        y += p(40) + p(8)
+        desc = tr(f"style_{s.music_style}_desc")
+        dh = self.wrap_h(desc, self.painter.f_small, x1 - pad - cx)
+        self.W(desc, self.painter.f_small, MenuPainter.MUTED, cx + p(2), y, x1 - pad, y + dh)
+        y += dh + p(16)
+        pal = s.music_palette
+        kw = {"rainbow": dict(stops=[hsv_color(a * 60, 1) for a in range(6)]), "screen": dict(glyph="monitor"),
+              "color": dict(swatch=s.color), "gradient": dict(stops=s.gradient)}[pal]
+        self.T(tr("music_colors"), self.fonts["body"], MenuPainter.ICON, x0 + pad, y, cx, y + p(36), 0x8000)
+        self._picker("pick:palette", cx, y, min(p(300), x1 - pad - cx), tr("palette_" + pal), **kw)
+        y += p(36) + p(18)
+        self.T(tr("music_sensitivity"), self.fonts["body"], MenuPainter.ICON, x0 + pad, y, cx, y + p(28), 0x8000)
+        self._slider("sens", cx + p(12), x1 - pad - p(12), y + p(14), s.sensitivity)
+        y += p(28) + pad
+        self._card_behind(at, top, y - top)
+        return y
+
     def _preview(self, x, y, w, h):
-        """The screen, its stand, and the light the LEDs throw on the wall: live while Glowback follows the screen."""
+        """The screen with its picture, its stand, and the light the LEDs throw on the wall, live."""
         p, s = self.px, self.state
-        glows = self._glows() if s.enabled and not s.waiting else []
+        s.thumb_want = time.monotonic()  # the capture loop sends the screen's picture while this shows
+        self.preview_rect = (int(max(x, self.sw)), int(max(0, y)), int(x + w) + 1, int(min(self.size[1], y + h)) + 1)
+        live = s.enabled and not s.waiting
+        glows = self._glows() if live else []
         self.S("clip", x + 1, y + 1, w - 2, h - 2, p(10))
         mh = min((h / 2 - p(12)) / 0.93, w * 0.40 * 9 / 16)  # the halo (0.43 of the height) stays in the card
         mw = mh * 16 / 9
         mx, my = x + (w - mw) / 2, y + (h - mh) / 2 - p(8)
-        if glows:
-            for ex, ey, color in glows:
-                dx, dy = ex - 0.5, ey - 0.5
-                n = max(abs(dx), abs(dy)) or 1.0
-                self.S("glow", color, mx + ex * mw + dx / n * mw * 0.07, my + ey * mh + dy / n * mh * 0.09,
-                       mw * 0.24, mh * 0.34, 185)
-        else:
+        layer = []
+        for ex, ey, color in glows:
+            r_, g_, b_ = rgb(color)
+            v = max(r_, g_, b_)
+            if v < 6:
+                continue  # a dark LED throws no light (and no shadow)
+            k = 255.0 / v
+            pure = (min(255, round(r_ * k)) << 16) | (min(255, round(g_ * k)) << 8) | min(255, round(b_ * k))
+            dx, dy = ex - 0.5, ey - 0.5
+            n = max(abs(dx), abs(dy)) or 1.0
+            layer.append((pure, mx + ex * mw + dx / n * mw * 0.07, my + ey * mh + dy / n * mh * 0.09,
+                          mw * 0.24, mh * 0.34, 200 * (v / 255.0) ** 0.75))
+        if not live:
             idle = 0x4B3F86 if s.enabled else 0x34363F
             for ex, ey in ((0.5, 0.0), (0.5, 1.0), (0.0, 0.5), (1.0, 0.5)):
-                self.S("glow", idle, mx + ex * mw, my + ey * mh, mw * 0.42, mh * 0.42, 60)
+                layer.append((idle, mx + ex * mw, my + ey * mh, mw * 0.42, mh * 0.42, 60))
+        self.S("glows", layer, x, y, x + w, y + h)
         nw, nh = mw * 0.08, mh * 0.2
         self.S("round", 0x1C1E25, mx + mw / 2 - nw / 2, my + mh, nw, nh, p(2))
         bw, bh = mw * 0.34, max(p(6), mh * 0.05)
@@ -5631,80 +7191,140 @@ class AppWindow:
         bez = max(p(3), mw * 0.012)
         self.S("round", 0x2B2D35, mx - bez, my - bez, mw + 2 * bez, mh + 2 * bez, p(6))
         self.S("round", 0x08090B, mx, my, mw, mh, p(4))
+        thumb = s.thumb
+        if thumb:
+            self.S("image", thumb, mx, my, mw, mh, p(4))
+        mode = s.active["look"]["mode"]
+        glyph = ("pause" if not s.enabled else "bulb" if mode == "device" else "power" if mode == "off"
+                 else None if s.leds else "search")
+        if glyph:  # a quiet sign of why the screen throws no light
+            if thumb:
+                self.S("round", 0x000000, mx, my, mw, mh, p(4), 150)
+                d = p(52)
+                self.S("circle", 0x000000, mx + (mw - d) / 2, my + (mh - d) / 2, d, 140)
+            self.T(MenuPainter.ICONS[glyph], self.fonts["icon_l"], 0x8A8FA0 if thumb else 0x4A4E5C, mx, my, mx + mw,
+                   my + mh, 0x1)
         self.S("unclip")
         text, color = self._status()
-        if not glows:  # a quiet sign of why the screen throws no light
-            glyph = "pause" if not s.enabled else "clock" if s.waiting else "search"
-            self.T(MenuPainter.ICONS[glyph], self.fonts["icon_l"], 0x4A4E5C, mx, my, mx + mw, my + mh, 0x1)
-        self.S("circle", color, x + p(24), y + p(31), p(9))
+        d = p(9)
+        self.S("circle", color, x + p(24), y + p(34) - d / 2, d)  # centred on the text beside it
         self.T(text, self.fonts["h2"], MenuPainter.TEXT, x + p(42), y + p(22), x + w / 2, y + p(46), 0x8000)
         if s.screens and s.leds:
             self.T(" · ".join(s.screens), self.painter.f_small, MenuPainter.MUTED, x + p(42), y + p(46), x + w / 2,
                    y + p(64), 0x8000)
 
-    def _page_sync(self, y):
+    def _page_profiles(self, y):
         p, s, ic = self.px, self.state, MenuPainter.ICONS
         x0, x1 = self.cx0, self.cx1
-        y = self._header(y, tr("sync_when"), tr("sync_sub"))
-        if not s.enabled:
-            glyph, color, text = "info", MenuPainter.MUTED, tr("sync_now_paused")
-        elif not s.rules:
-            glyph, color, text = "check", MenuPainter.GREEN, tr("sync_now_always")
-        elif s.waiting:
-            glyph, color, text = "clock", MenuPainter.AMBER, tr("sync_now_waiting")
-        else:
-            glyph, color, text = "check", MenuPainter.GREEN, tr("sync_now_on", rule=self._rule_text(s.rule_hit))
+        y = self._header(y, tr("nav_profiles"), tr("profiles_sub"))
+        glyph, color, text = self._profile_now()
         th = self.wrap_h(text, self.fonts["body"], x1 - x0 - p(82))
         h = max(p(56), th + p(30))
         self._card(y, h)
         self.T(ic[glyph], self.fonts["icon"], color, x0 + p(20), y, x0 + p(44), y + h, 0x1)
         self.W(text, self.fonts["body"], MenuPainter.TEXT, x0 + p(62), y + (h - th) / 2, x1 - p(20), y + (h + th) / 2)
         y += h + p(28)
-        y = self._label(y, tr("sync_list"))
+
+        # day and night
+        y = self._label(y, tr("night_title"))
+        n, rh = s.night, p(68)
+        rows = 4 if n["on"] else 1
+        self._card(y, rh * rows)
+        tx = x1 - p(20) - p(42)
+        self._toggle("night", tx, y + (rh - p(22)) / 2, n["on"], row=(x0, y, x1, y + rh))
+        self._row_text(y, rh, "moon", tr("night_profile"), tr("night_desc", start=hhmm(n["from"]), end=hhmm(n["to"])),
+                       right=tx - p(16))
+        if n["on"]:
+            ry = y + rh
+            self._sep(ry)
+            sy = ry + (rh - p(36)) / 2
+            left = self._stepper("night_to", x1 - p(20), sy, hhmm(n["to"]))
+            self.T(ic["arrow"], self.fonts["icon_s"], MenuPainter.MUTED, left - p(34), ry, left - p(8), ry + rh, 0x1)
+            left = self._stepper("night_from", left - p(42), sy, hhmm(n["from"]))
+            self._row_text(ry, rh, "clock", tr("night_hours"), None, right=left - p(12))
+            ry += rh
+            self._sep(ry)
+            sx = x0 + p(62) + max(p(150), self.tw(tr("night_brightness"), self.fonts["body"]) + p(28))
+            self._row_text(ry, rh, "sun", tr("night_brightness"), None, right=sx - p(12))
+            self._slider("night_bright", sx, x1 - p(88), ry + rh / 2, n["brightness"])
+            self.T(f"{n['brightness']} %", self.fonts["body"], MenuPainter.TEXT, x1 - p(76), ry, x1 - p(20), ry + rh, 0x2)
+            ry += rh
+            self._sep(ry)
+            text, kw = self._look_label(n["look"], tr("night_same"))
+            pw = min(p(280), (x1 - x0) * 0.45)
+            self._picker("pick:night_look", x1 - p(20) - pw, ry + (rh - p(36)) / 2, pw, text, **kw)
+            self._row_text(ry, rh, "palette", tr("night_look"), None, right=x1 - p(36) - pw)
+        y += rh * rows + p(28)
+
+        # by app
+        y = self._label(y, tr("apps_title"))
         if s.rules:
             rh = p(64)
             self._card(y, rh * len(s.rules))
+            narrow = x1 - x0 < p(700)  # Remove becomes an icon: room for the look
             for i, r in enumerate(s.rules):
                 ry = y + i * rh
                 if i:
                     self._sep(ry)
-                bx = self._button(f"remove:{i}", x1 - p(14), ry + (rh - p(32)) / 2, tr("sync_remove"), "quiet",
-                                  icon="delete", h=p(32))
+                if narrow:
+                    bx = x1 - p(16) - p(34)
+                    self._icon_button(f"remove:{i}", bx, ry + (rh - p(34)) / 2, p(34), "delete")
+                else:
+                    bx = self._button(f"remove:{i}", x1 - p(14), ry + (rh - p(32)) / 2, tr("sync_remove"), "quiet",
+                                      icon="delete", h=p(32))
+                text, kw = self._look_label(r.get("look"), tr("look_auto_short"))
+                pw = min(p(230), (x1 - x0) * (0.38 if narrow else 0.3))
+                self._picker(f"pick:look:{i}", bx - p(8) - pw, ry + (rh - p(36)) / 2, pw, text, **kw)
                 hicon = self._app_icon(r.get("path"))
                 self._row_text(ry, rh, None if hicon else ("apps" if r["app"] else "filter"), self._app_name(r),
-                               self._rule_desc(r), right=bx - p(12), hicon=hicon)
-            y += rh * len(s.rules)
+                               self._rule_desc(r), right=bx - p(20) - pw, hicon=hicon)
+            y += rh * len(s.rules) + p(12)
+            rh = p(68)
+            self._card(y, rh)
+            text, kw = self._look_label(None if s.otherwise == "auto" else {"mode": s.otherwise}, tr("look_auto_short"))
+            pw = min(p(260), (x1 - x0) * 0.4)
+            self._picker("pick:rest", x1 - p(20) - pw, y + (rh - p(36)) / 2, pw, text, **kw)
+            self._row_text(y, rh, "clock", tr("rest_title"), tr("rest_desc"), right=x1 - p(36) - pw)
+            y += rh
         else:
             h = p(56)
             self._card(y, h)
-            self.T(tr("sync_empty"), self.fonts["body"], MenuPainter.MUTED, x0 + p(20), y, x1 - p(20), y + h, 0x8000)
+            self.T(tr("apps_empty"), self.fonts["body"], MenuPainter.MUTED, x0 + p(20), y, x1 - p(20), y + h, 0x8000)
             y += h
         y += p(28)
-        y = self._label(y, tr("sync_add_title"))
+
+        # add an app
+        y = self._label(y, tr("apps_add"))
         pad, gap = p(20), p(14)
-        add = tr("sync_add")
-        help_text = tr("sync_examples")
-        help_h = self.wrap_h(help_text, self.painter.f_small, x1 - x0 - 2 * pad)
-        rows_h = 2 * (p(22) + p(36)) + p(16)  # app and when, then screen and the button
-        ch = pad + rows_h + p(18) + help_h + pad
-        self._card(y, ch)
         d = self.draft
-        texts = (d["name"] or (d["app"][:-4] if d["app"] else tr("sync_any_app")), tr("sync_" + d["when"]),
-                 self._screen_text(d["screen"]))
         half = (x1 - x0 - 2 * pad - gap) / 2
-        xs = (x0 + pad, x0 + pad + half + gap, x0 + pad)
-        ys = (y + pad, y + pad, y + pad + p(58) + p(16))
-        for key, xx, yy, text, wid in zip(("sync_app", "sync_when_label", "sync_screen"), xs, ys, texts,
-                                          ("pick:app", "pick:when", "pick:screen")):
+        help_text = tr("apps_examples")
+        bw = self.tw(tr("sync_add"), self.fonts["button"]) + p(54)
+        help_h = self.wrap_h(help_text, self.painter.f_small, x1 - x0 - 2 * pad - bw - p(24))
+        ch = pad + 2 * (p(22) + p(36)) + p(16) + p(18) + max(p(34), help_h) + pad
+        self._card(y, ch)
+        playing = d["when"] == "playing"
+        look_text, look_kw = self._look_label(d["look"], tr("look_auto_short"))
+        fields = (("sync_app", "pick:app", x0 + pad, y + pad),
+                  ("sync_when_label", "pick:when", x0 + pad + half + gap, y + pad),
+                  ("sync_screen", "pick:screen", x0 + pad, y + pad + p(58) + p(16)),
+                  ("look_label", "pick:draft_look", x0 + pad + half + gap, y + pad + p(58) + p(16)))
+        for key, wid, xx, yy in fields:
             self.T(tr(key).upper(), self.painter.f_label, MenuPainter.MUTED, xx + p(2), yy, xx + half, yy + p(16))
             if wid == "pick:app":
                 hicon = self._app_icon(d["path"])
+                text = d["name"] or (d["app"][:-4] if d["app"] else tr("sync_any_app"))
                 self._picker(wid, xx, yy + p(22), half, text, hicon=hicon, glyph=None if hicon else "apps")
+            elif wid == "pick:when":
+                self._picker(wid, xx, yy + p(22), half, tr("sync_" + d["when"]), glyph="volume" if playing else "filter")
+            elif wid == "pick:screen":
+                self._picker(wid, xx, yy + p(22), half, self._screen_text("" if playing else d["screen"]),
+                             glyph="monitor", disabled=playing)
             else:
-                self._picker(wid, xx, yy + p(22), half, text, glyph="monitor" if wid == "pick:screen" else "filter")
-        self._button("add", x1 - pad, ys[2] + p(23), add, "primary", icon="add")
-        hy = y + pad + rows_h + p(18)
-        self.W(help_text, self.painter.f_small, MenuPainter.MUTED, x0 + pad, hy, x1 - pad, hy + help_h)
+                self._picker(wid, xx, yy + p(22), half, look_text, **look_kw)
+        by = y + pad + 2 * (p(22) + p(36)) + p(16) + p(18)
+        self._button("add", x1 - pad, by, tr("sync_add"), "primary", icon="add")
+        self.W(help_text, self.painter.f_small, MenuPainter.MUTED, x0 + pad, by, x1 - pad - bw - p(24), by + help_h)
         return y + ch
 
     def _page_home(self, y):
@@ -5733,19 +7353,30 @@ class AppWindow:
         else:
             bx = self._button("ha:setup", x1 - p(20), by, tr("home_setup"), "primary")
         tx = x0 + p(80)
-        self.S("circle", color, tx, y + p(26) + p(5), p(8))
+        self.S("circle", color, tx, y + p(30) - p(4), p(8))  # centred on the title beside it
         self.T(title, self.fonts["h2"], MenuPainter.TEXT, tx + p(16), y + p(18), bx - p(16), y + p(42), 0x8000)
         self.T(desc, self.painter.f_small, MenuPainter.MUTED, tx, y + p(44), bx - p(16), y + p(66), 0x8000)
         y += h + p(28)
         y = self._label(y, tr("home_entities"))
-        rows = (("light", "light.glowback", tr("home_light")), ("monitor", "sensor.glowback_leds", tr("home_leds")),
-                ("sync", "update.glowback", tr("home_update")))
-        rh = p(62)
+        rows = (("light", tr("ambilight"), tr("home_light"), "light.glowback"),
+                ("monitor", tr("home_leds_title"), tr("home_leds"), "sensor.glowback_leds"),
+                ("sync", tr("home_update_title"), tr("home_update"), "update.glowback"))
+        rh = p(64)
         self._card(y, rh * len(rows))
-        for i, (icon, entity, text) in enumerate(rows):
+        f = self.painter.f_small
+        for i, (icon, title, text, entity) in enumerate(rows):
+            ry = y + i * rh
             if i:
-                self._sep(y + i * rh)
-            self._row_text(y + i * rh, rh, icon, entity, text)
+                self._sep(ry)
+            right = x1 - p(20)
+            tag = self.tw(entity, f) + p(20)
+            if x1 - x0 > p(560):  # its ID, for automations: small, on the right
+                th = p(26)
+                self.S("round", self.FIELD, right - tag, ry + (rh - th) / 2, tag, th, p(6))
+                self.S("outline", self.FIELD_LINE, right - tag, ry + (rh - th) / 2, tag, th, p(6), max(1.0, self.k))
+                self.T(entity, f, MenuPainter.MUTED, right - tag, ry, right, ry + rh, 0x1)
+                right -= tag + p(16)
+            self._row_text(ry, rh, icon, title, text, right=right)
         y += rh * len(rows) + p(28)
         y = self._label(y, tr("home_voice"))
         guide = tr("ha_guide")
@@ -5834,35 +7465,51 @@ class AppWindow:
         return y + p(20)
 
     # ---- painting
-    def draw(self, hdc, W, H):
-        """Composes and paints everything into hdc, W x H pixels (double-buffered; the page scrolls under the
-        sidebar, clipped by painting it into its own buffer)."""
+    def draw(self, hdc, W, H, clip=None):
+        """Composes and paints into hdc, W x H pixels (double-buffered; the page scrolls under the sidebar, clipped
+        by painting it into its own buffer). clip (l, t, r, b): only that part changed (the live preview)."""
         self.size = (W, H)
         self.compose()
-        bufs = []
-        for _ in range(2):
-            mem = gdi32.CreateCompatibleDC(hdc)
-            bmp = gdi32.CreateCompatibleBitmap(hdc, W, H)
-            bufs.append((mem, bmp, gdi32.SelectObject(mem, bmp)))
+        if not self.bufs or self.bufs[0] != (W, H):  # kept from one paint to the next
+            self._free_bufs()
+            bufs = []
+            for _ in range(2):
+                mem = gdi32.CreateCompatibleDC(hdc)
+                bmp = gdi32.CreateCompatibleBitmap(hdc, W, H)
+                bufs.append((mem, bmp, gdi32.SelectObject(mem, bmp)))
+            self.bufs, clip = ((W, H), bufs), None
+        (side, _, _), (page, _, _) = self.bufs[1]
+        l, t, r, b = clip or (0, 0, W, H)
         brush = gdi32.CreateSolidBrush(_cref(self.BG))
-        for mem, _, _ in bufs:
-            user32.FillRect(mem, byref(wt.RECT(0, 0, W, H)), brush)
+        for mem in (side, page):
+            user32.FillRect(mem, byref(wt.RECT(l, t, r, b)), brush)
         gdi32.DeleteObject(brush)
-        (side, _, _), (page, _, _) = bufs
-        self._render(page, *self.content)
-        gdi32.BitBlt(side, self.sw, 0, W - self.sw, H, page, self.sw, 0, 0x00CC0020)
-        self._render(side, *self.side)
-        gdi32.BitBlt(hdc, 0, 0, W, H, side, 0, 0, 0x00CC0020)
-        for mem, bmp, old in bufs:
+        self._render(page, *self.content, clip=clip)
+        x0 = max(l, self.sw)
+        if r > x0:
+            gdi32.BitBlt(side, x0, t, r - x0, b - t, page, x0, t, 0x00CC0020)
+        self._render(side, *self.side, clip=clip)
+        gdi32.BitBlt(hdc, l, t, r - l, b - t, side, l, t, 0x00CC0020)
+
+    def _free_bufs(self):
+        for mem, bmp, old in self.bufs[1] if self.bufs else ():
             gdi32.SelectObject(mem, old)
             gdi32.DeleteObject(bmp)
             gdi32.DeleteDC(mem)
+        self.bufs = None
 
-    def _render(self, hdc, shapes, texts):
-        gfx = Gfx(hdc)
+    def _render(self, hdc, shapes, texts, clip=None):
+        gfx = Gfx(hdc, clip)
         for shape in shapes:
             gfx.draw(shape)
         gfx.close()
+        if clip:
+            gdi32.IntersectClipRect(hdc, *clip)
+        self._texts(hdc, texts)
+        if clip:
+            gdi32.SelectClipRgn(hdc, None)
+
+    def _texts(self, hdc, texts):
         gdi32.SetBkMode(hdc, 1)
         for item in texts:
             if item[0] == "text":
@@ -5891,7 +7538,7 @@ class AppWindow:
 
     def activate(self, wid):
         s, t = self.state, self.tray
-        if wid.startswith("nav:") or wid == "goto:sync":
+        if wid.startswith("nav:") or wid == "goto:profiles":
             self.page, self.scroll = wid.split(":")[1], 0
             if self.page == "settings":
                 t.autostart = autostart_enabled()
@@ -5901,6 +7548,40 @@ class AppWindow:
             t.refresh()
         elif wid.startswith("mode:"):
             s.update(mode=wid[5:])
+        elif wid.startswith("swatch:"):
+            self._set_color(dict(SWATCHES)[wid[7:]])
+        elif wid.startswith("stop:"):
+            stops, i = list(s.gradient), self.stop_sel
+            if wid == "stop:add" and len(stops) < 4:
+                j = min(i + 1, len(stops) - 1)
+                mid = gradient_at((stops[i], stops[j]), 0.5) if j != i else rgb(stops[i])
+                h, sat, _ = color_hsv((round(mid[0]) << 16) | (round(mid[1]) << 8) | round(mid[2]))
+                stops.insert(i + 1, hsv_color(h, sat))
+                self.stop_sel = i + 1
+                s.update(gradient=tuple(stops))
+            elif wid == "stop:del" and len(stops) > 2:
+                del stops[i]
+                self.stop_sel = max(0, i - 1)
+                s.update(gradient=tuple(stops))
+            elif wid[5:].isdigit():
+                self.stop_sel = int(wid[5:])
+        elif wid.startswith("preset:"):
+            s.update(gradient=dict(GRADIENTS)[wid[7:]])
+            self.stop_sel = 0
+        elif wid == "flow":
+            s.update(flow=not s.flow)
+        elif wid.startswith("style:"):
+            s.update(music_style=wid[6:])
+        elif wid == "night":
+            s.set_profiles(night=dict(s.night, on=not s.night["on"]))
+        elif wid.startswith(("night_from:", "night_to:")):
+            key, step = wid.split(":")
+            key = "from" if key == "night_from" else "to"
+            value = (s.night[key] // 30 * 30 + (30 if step == "+" else -30)) % 1440
+            other = s.night["to" if key == "from" else "from"]
+            if value == other:  # from and to never meet
+                value = (value + (30 if step == "+" else -30)) % 1440
+            s.set_profiles(night=dict(s.night, **{key: value}))
         elif wid == "autostart":
             set_autostart(not t.autostart, t.argv)
             t.autostart = autostart_enabled()
@@ -5929,7 +7610,7 @@ class AppWindow:
             self._pick(wid[5:])
         elif wid == "add":
             d = self.draft
-            rule = dict(app=d["app"], when=d["when"], screen=d["screen"], name=d["name"], path=d["path"])
+            rule = dict(app=d["app"], when=d["when"], screen=d["screen"], name=d["name"], path=d["path"], look=d["look"])
             s.set_rules(s.rules + [rule])
         elif wid.startswith("remove:"):
             rules = list(s.rules)
@@ -5941,32 +7622,87 @@ class AppWindow:
                 self.focus = None
         self.invalidate()
 
-    def _slide(self, x, save=False):
-        w = self._widget("brightness")
-        if not w:
-            return
-        v = round(max(0.0, min(1.0, (x - w["x0"]) / max(1, w["x1"] - w["x0"]))) * 20) * 5
+    def _set_color(self, color, live=False):
+        """The color being edited: the color mode's, or the gradient's chosen stop. Live: while dragging."""
         s = self.state
-        if save:
-            s.update(brightness=v)
-        elif v != round(s.brightness):
-            s.brightness = v  # live while dragging; saved once released
+        if s.mode == "gradient":
+            stops = list(s.gradient)
+            stops[min(self.stop_sel, len(stops) - 1)] = color
+            kw = dict(gradient=tuple(stops))
+        else:
+            kw = dict(color=color)
+        if live:
+            for k, v in kw.items():
+                setattr(s, k, v)
             s.version += 1
+            s._activate(s.rule_hit)
+        else:
+            s.update(**kw)
+
+    def _edited_color(self):
+        s = self.state
+        return s.gradient[min(self.stop_sel, len(s.gradient) - 1)] if s.mode == "gradient" else s.color
+
+    def _slide(self, x, save=False):
+        """A slider follows the mouse at x (None: just save where it is)."""
+        wid = self.drag or self.focus
+        w = self._widget(wid)
+        if not w or w["kind"] != "slider":
+            return
+        f = self._slider_value(w, x) if x is not None else None
+        self._slider_set(wid, f, save)
         self.invalidate()
+
+    def _slider_value(self, w, x):
+        return max(0.0, min(1.0, (x - w["x0"]) / max(1, w["x1"] - w["x0"])))
+
+    def _slider_set(self, wid, f, save, step=None):
+        """Sets slider `wid` to f (0..1; None: unchanged), live while dragging, saved when `save`. `step`: keys."""
+        s = self.state
+        if wid in ("brightness", "sens", "night_bright"):
+            cur = {"brightness": s.brightness, "sens": s.sensitivity, "night_bright": s.night["brightness"]}[wid]
+            v = round(cur) if f is None else round(f * 20) * 5
+            if step:
+                v = max(0, min(100, round(cur / 5) * 5 + step * 5))
+            if wid == "night_bright":
+                if save or v != s.night["brightness"]:
+                    s.set_profiles(night=dict(s.night, brightness=v), save=save)
+                return
+            attr = "brightness" if wid == "brightness" else "sensitivity"
+            if save:
+                s.update(**{attr: v})
+            elif v != round(cur):
+                setattr(s, attr, v)  # live while dragging; saved once released
+                s.version += 1
+                s._activate(s.rule_hit)
+        elif wid in ("hue", "sat"):
+            color = self._edited_color()
+            h, sat = self._hsv(color)
+            if wid == "hue":
+                h = h if f is None else f * 360.0
+                if step:
+                    h = (h + step * 5) % 360
+                sat = sat if sat > 0.05 else 1.0  # a white takes colour when the hue moves
+            else:
+                sat = sat if f is None else f
+                if step:
+                    sat = max(0.0, min(1.0, sat + step * 0.05))
+            new = hsv_color(h, sat)
+            self.hue_memo = (new, h)
+            self._set_color(new, live=not save)
 
     def _pick(self, which):
         w = self._widget("pick:" + which)
         if not w:
             return
-        items, values, d = [], [], self.draft
+        s, d = self.state, self.draft
+        items = []
 
-        def radio(text, value, checked):
-            items.append(dict(kind="radio", text=text, checked=checked))
-            values.append(value)
+        def radio(text, value, checked, **kw):
+            items.append(dict(kind="radio", text=text, value=value, checked=checked, **kw))
 
         def other(kind, text="", value=None):
-            items.append(dict(kind=kind, text=text, icon="add" if kind == "action" else None))
-            values.append(value)
+            items.append(dict(kind=kind, text=text, icon="add" if kind == "action" else None, value=value))
 
         if which == "app":
             radio(tr("sync_any_app"), ("", "", ""), not d["app"])
@@ -5983,7 +7719,7 @@ class AppWindow:
         elif which == "when":
             for when in WHEN:
                 if when != "running" or d["app"]:
-                    radio(tr("sync_" + when), when, d["when"] == when)
+                    radio(tr("sync_" + when), when, d["when"] == when, icon="volume" if when == "playing" else None)
         elif which == "screen":
             radio(tr("sync_any_screen"), "", not d["screen"])
             radio(self._screen_text("leds"), "leds", d["screen"] == "leds")
@@ -5995,12 +7731,29 @@ class AppWindow:
             saved = load_settings().get("lang") or ""
             for code, name in self.LANG_NAMES:
                 radio(name or tr("lang_auto"), code, saved == code)
+        elif which == "palette":
+            for pal in MUSIC_PALETTES:
+                kw = {"rainbow": dict(stops=[hsv_color(a * 60, 1) for a in range(6)]), "screen": dict(icon="monitor"),
+                      "color": dict(swatch=s.color), "gradient": dict(stops=s.gradient)}[pal]
+                radio(tr("palette_" + pal), pal, s.music_palette == pal, **kw)
+        elif which == "rest":
+            for value, glyph in (("auto", "sparkle"), ("device", "bulb"), ("off", "power")):
+                radio(tr("look_auto" if value == "auto" else "look_" + value), value, s.otherwise == value, icon=glyph)
+        elif which == "night_look":
+            items = self._look_items(s.night["look"], tr("night_same"))
+        elif which == "draft_look":
+            items = self._look_items(d["look"], tr("look_auto"))
+        elif which.startswith("look:"):
+            i = int(which[5:])
+            if i >= len(s.rules):
+                return
+            items = self._look_items(s.rules[i].get("look"), tr("look_auto"))
         for it in items:
             it["min"] = (w["rect"][2] - w["rect"][0]) / self.k
-        choice = self._menu(items, w["rect"])
-        if choice is None or values[choice] is None:
+        chosen = self._menu(items, w["rect"])
+        if chosen is None or chosen.get("value") is None:
             return
-        value = values[choice]
+        value = chosen["value"]
         if which == "app":
             if value == "browse":
                 path = pick_program(self.hwnd)
@@ -6018,24 +7771,53 @@ class AppWindow:
             save_settings({"lang": value or None})
             set_lang(value or detect_lang())
             self.tray.refresh()
+        elif which == "palette":
+            s.update(music_palette=value)
+        elif which == "rest":
+            s.set_profiles(otherwise=value)
+        elif which == "night_look":
+            s.set_profiles(night=dict(s.night, look=value[1]))
+        elif which == "draft_look":
+            d["look"] = value[1]
+        elif which.startswith("look:"):
+            rules = [dict(r) for r in s.rules]
+            rules[int(which[5:])]["look"] = value[1]
+            s.set_rules(rules)
         self.invalidate()
 
     def _menu(self, items, rect):
-        """An owner-drawn popup menu in the panel's style, under a picker: the index chosen, or None."""
-        self.menu_items = items
-        menu = user32.CreatePopupMenu()
-        info = MENUINFO()
-        info.cbSize, info.fMask, info.hbrBack = sizeof(info), 0x2, self.painter.bg_brush  # MIM_BACKGROUND
-        user32.SetMenuInfo(menu, byref(info))
-        for i, it in enumerate(items):
-            flags = 0x100 | (0x2 if it["kind"] in ("sep", "label") else 0)  # MF_OWNERDRAW, MF_DISABLED
-            user32.AppendMenuW(menu, flags, i + 1, ctypes.c_void_p(i))
+        """An owner-drawn popup menu in the panel's style, under a picker (entries with "items" open a submenu):
+        the entry chosen, or None."""
+        flat = []
+
+        def build(entries):
+            menu = user32.CreatePopupMenu()
+            info = MENUINFO()
+            info.cbSize, info.fMask, info.hbrBack = sizeof(info), 0x2, self.painter.bg_brush  # MIM_BACKGROUND
+            user32.SetMenuInfo(menu, byref(info))
+            for pos, it in enumerate(entries):
+                i = len(flat)
+                flat.append(it)
+                if it.get("items"):
+                    sub = build(it["items"])
+                    user32.AppendMenuW(menu, 0x10 | 0x100, sub, ctypes.c_void_p(i))  # MF_POPUP | MF_OWNERDRAW
+                elif it["kind"] in ("sep", "label"):  # a separator the keyboard skips, drawn like the rest
+                    mii = MENUITEMINFOW()
+                    mii.cbSize, mii.fMask = sizeof(mii), 0x100 | 0x20  # MIIM_FTYPE | MIIM_DATA
+                    mii.fType, mii.dwItemData = 0x800 | 0x100, i  # MFT_SEPARATOR | MFT_OWNERDRAW
+                    user32.InsertMenuItemW(menu, pos, True, byref(mii))
+                else:
+                    user32.AppendMenuW(menu, 0x100, i + 1, ctypes.c_void_p(i))  # MF_OWNERDRAW
+            return menu
+
+        menu = build(items)
+        self.menu_items = flat
         pt = wt.POINT(int(rect[0]), int(rect[3]) + self.px(4))
         user32.ClientToScreen(self.hwnd, byref(pt))
         cmd = user32.TrackPopupMenu(menu, 0x0100 | 0x0080, pt.x, pt.y, 0, self.hwnd, None)  # RETURNCMD, NONOTIFY
-        user32.DestroyMenu(menu)
+        user32.DestroyMenu(menu)  # and its submenus
         self.menu_items = []
-        return cmd - 1 if cmd else None
+        return flat[cmd - 1] if cmd and cmd - 1 < len(flat) else None
 
     def _key(self, vk):
         order = []
@@ -6054,9 +7836,8 @@ class AppWindow:
         if vk in (0x0D, 0x20) and self.focus in order:  # Enter, Space
             self.activate(self.focus)
             return 0
-        if vk in (0x25, 0x26, 0x27, 0x28) and self.focus == "brightness":  # arrows
-            step = 5 if vk in (0x26, 0x27) else -5
-            self.state.update(brightness=max(0, min(100, round(self.state.brightness / 5) * 5 + step)))
+        if vk in (0x25, 0x26, 0x27, 0x28) and self.focus in self.SLIDERS:  # arrows
+            self._slider_set(self.focus, None, True, step=1 if vk in (0x26, 0x27) else -1)
             self.invalidate()
             return 0
         if vk in (0x21, 0x22, 0x24, 0x23):  # Page up/down, Home, End
@@ -6096,10 +7877,11 @@ class AppWindow:
         if msg == 0x000F and self.painter:  # WM_PAINT
             ps = PAINTSTRUCT()
             hdc = user32.BeginPaint(hwnd, byref(ps))
-            rc = wt.RECT()
+            rc, pr = wt.RECT(), ps.rcPaint
             user32.GetClientRect(hwnd, byref(rc))
             if rc.right > 0 and rc.bottom > 0:
-                self.draw(hdc, rc.right, rc.bottom)
+                part = (pr.left, pr.top, pr.right, pr.bottom)
+                self.draw(hdc, rc.right, rc.bottom, None if part == (0, 0, rc.right, rc.bottom) else part)
             user32.EndPaint(hwnd, byref(ps))
             return 0
         if msg == 0x0014:  # WM_ERASEBKGND: painted in WM_PAINT
@@ -6119,8 +7901,11 @@ class AppWindow:
             self.invalidate()
             return 0
         if msg == 0x0113:  # WM_TIMER
-            if wparam == 1 and not (self.state.enabled and not self.state.waiting and self.state.preview):
-                return 0  # nothing moves in the preview
+            if wparam == 1:
+                r = self.preview_rect
+                if (self.state.preview or self.state.thumb) and r and r[3] > r[1]:
+                    user32.InvalidateRect(hwnd, byref(wt.RECT(*r)), False)  # only the preview moves
+                return 0
             if wparam == 3 and not self.tray.checking:
                 user32.KillTimer(hwnd, 3)
             self.invalidate()
@@ -6159,9 +7944,9 @@ class AppWindow:
         if msg == 0x0202:  # WM_LBUTTONUP
             x, y = xy()
             if self.drag:
+                self._slide(x, save=True)
                 self.drag = self.pressed = None
                 user32.ReleaseCapture()
-                self._slide(x, save=True)
                 return 0
             w, pressed = self._hit(x, y), self.pressed
             self.pressed = None
@@ -6172,8 +7957,8 @@ class AppWindow:
             self.invalidate()
             return 0
         if msg == 0x0215 and self.drag:  # WM_CAPTURECHANGED: dragging ended elsewhere
-            self.drag = None
-            self.state.update(brightness=self.state.brightness)
+            wid, self.drag = self.drag, None
+            self._slider_set(wid, None, True)
             return 0
         if msg == 0x020A:  # WM_MOUSEWHEEL
             self.scroll_by(-ctypes.c_short((wparam >> 16) & 0xFFFF).value / 120 * self.px(72))
@@ -6199,6 +7984,7 @@ class AppWindow:
             for timer in (1, 2, 3):
                 user32.KillTimer(hwnd, timer)
             self.hwnd, self.hover, self.pressed, self.drag = None, None, None, None
+            self._free_bufs()
             self._free_gdi()
             self.tray.app_closed()
             return 0
@@ -6213,8 +7999,13 @@ def parse_args(argv=None):
         prog="glowback",
         description="Ambient light for monitors with RGB LEDs on the back (Windows Dynamic Lighting / HID LampArray).",
         epilog="Example: glowback --brightness 70 --smoothing 0.2")
-    p.add_argument("--mode", choices=["zones", "average"], default=None,
-                   help="zones: each LED follows the part of the image it sits behind (default); average: one color")
+    p.add_argument("--mode", choices=list(MODES), default=None,
+                   help="zones: each LED follows the part of the image it sits behind (default); average: one color "
+                        "for all, the screen's average; color: --color; gradient: --gradient; music: the LEDs follow "
+                        "the sound the PC plays")
+    p.add_argument("--color", metavar="#RRGGBB", help="the color of the color mode (default: the app's)")
+    p.add_argument("--gradient", metavar="#RRGGBB,#RRGGBB[,...]",
+                   help="2 to 4 colors of the gradient mode, from left to right (default: the app's)")
     p.add_argument("--screen", default="auto",
                    help="screen to follow: auto (EDID model match, else primary), primary, a number from --list, or a name")
     p.add_argument("--device", default=None,
@@ -6239,8 +8030,9 @@ def parse_args(argv=None):
                    help="show Glowback in Home Assistant through its MQTT broker (saved; off to remove it)")
     p.add_argument("--sync-when", action="append", metavar="WHEN:APP[@SCREEN]|always",
                    help="follow the screen only while one of these holds (repeatable, saved): WHEN is running, "
-                        "foreground or fullscreen; APP an .exe name or * for any app; SCREEN leds (the screen the "
-                        "LEDs follow), a number from --list or a name. 'always' removes the conditions")
+                        "foreground, fullscreen or playing (plays sound); APP an .exe name or * for any app; SCREEN "
+                        "leds (the screen the LEDs follow), a number from --list or a name. 'always' removes the "
+                        "conditions. The app's Profiles page sets a look for each app")
     p.add_argument("--strip-start", default="bottom-left",
                    choices=["bottom-left", "bottom-center", "bottom-right", "top-left", "top-right"],
                    help="OpenRGB LED strips: where the first LED is (strip runs around the screen)")
@@ -6290,6 +8082,10 @@ def _passthrough(raw):
 def main(argv=None):
     raw = list(sys.argv[1:] if argv is None else argv)
     args = parse_args(raw)
+    if args.color is not None and hex_color(args.color) is None:
+        sys.exit("--color: a color like #FF8800")
+    if args.gradient is not None and clean_stops(args.gradient) is None:
+        sys.exit("--gradient: 2 to 4 colors like #FF0080,#7928CA")
     set_lang(args.lang or load_settings().get("lang") or detect_lang())  # the app's Settings page can choose it
     try:  # leftover of a previous in-place update
         os.remove((sys.executable if getattr(sys, "frozen", False) else os.path.abspath(__file__)) + ".old")
